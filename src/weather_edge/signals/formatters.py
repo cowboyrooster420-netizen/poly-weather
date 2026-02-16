@@ -108,8 +108,11 @@ def format_telegram_signal(signal: Signal) -> str:
     return "\n".join(lines)
 
 
-def format_telegram_summary(signals: list[Signal]) -> str:
-    """Format a run summary for Telegram (Markdown)."""
+def format_telegram_summary(signals: list[Signal], max_chars: int = 4000) -> str:
+    """Format a run summary for Telegram (Markdown).
+
+    Truncates the signal table to fit within Telegram's message limit.
+    """
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
     count = len(signals)
 
@@ -124,11 +127,16 @@ def format_telegram_summary(signals: list[Signal]) -> str:
         sorted_signals = sorted(signals, key=lambda s: abs(s.edge), reverse=True)
         lines.append("")
         lines.append("| Dir | Edge | Kelly | Market |")
+        shown = 0
         for s in sorted_signals:
             question_short = s.question[:30].split("?")[0].strip()
-            lines.append(
-                f"| {s.direction} | {s.edge:+.1%} | {s.kelly_fraction:.1%} | {question_short} |"
-            )
+            row = f"| {s.direction} | {s.edge:+.1%} | {s.kelly_fraction:.1%} | {question_short} |"
+            # Check if adding this row would exceed the limit
+            if len("\n".join(lines + [row])) > max_chars:
+                lines.append(f"_... and {count - shown} more_")
+                break
+            lines.append(row)
+            shown += 1
 
     return "\n".join(lines)
 

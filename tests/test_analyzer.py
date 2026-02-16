@@ -93,7 +93,7 @@ class TestGenerateSignal:
         assert signal.edge < 0
 
     def test_no_signal_below_threshold(self):
-        """Should return None when edge is below min_edge (5%)."""
+        """Should return None when edge is below min_edge (10%)."""
         market = WeatherMarket(
             market_id="m1", condition_id="c1",
             question="Q", description="",
@@ -124,7 +124,24 @@ class TestGenerateSignal:
 
         signal = generate_signal(market, estimate)
 
-        # 0.05 is not < 0.05, so abs(edge) == min_edge → no signal
+        # 0.05 < 0.10, so below min_edge → no signal
+        assert signal is None
+
+    def test_no_signal_below_min_confidence(self):
+        """Should return None when confidence is below min_confidence (0.30)."""
+        market = WeatherMarket(
+            market_id="m1", condition_id="c1",
+            question="Q", description="",
+            outcome_yes_price=0.30, outcome_no_price=0.70,
+            params=MarketParams(market_type=MarketType.TEMPERATURE, location="X"),
+        )
+        estimate = ProbabilityEstimate(
+            probability=0.60, raw_probability=0.60,  # 30% edge, but low confidence
+            confidence=0.20, lead_time_hours=24,
+        )
+
+        signal = generate_signal(market, estimate)
+
         assert signal is None
 
     def test_signal_fields_populated(self, sample_weather_market, sample_estimate):

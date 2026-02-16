@@ -155,6 +155,15 @@ class TestFormatTelegramSummary:
         # Should contain a UTC timestamp
         assert "UTC" in text
 
+    def test_truncates_to_fit_limit(self):
+        """Many signals should be truncated to respect max_chars."""
+        signals = [_make_signal(edge=0.01 * i) for i in range(1, 101)]
+        text = format_telegram_summary(signals, max_chars=1000)
+        assert len(text) <= 1000
+        assert "100 signal(s) generated" in text
+        assert "... and" in text
+        assert "more" in text
+
 
 # ---- Notifier tests ----
 

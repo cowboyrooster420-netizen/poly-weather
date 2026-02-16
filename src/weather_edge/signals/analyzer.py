@@ -76,7 +76,7 @@ def generate_signal(
     if abs(edge) < settings.min_edge:
         return None
 
-    if estimate.confidence <= 0:
+    if estimate.confidence < settings.min_confidence:
         return None
 
     direction = "YES" if edge > 0 else "NO"

@@ -21,7 +21,10 @@ class Settings(BaseSettings):
     kelly_fraction: float = 0.25
 
     # Minimum edge to generate a signal
-    min_edge: float = 0.05
+    min_edge: float = 0.10
+
+    # Minimum model confidence to generate a signal
+    min_confidence: float = 0.30
 
     # SQLite database path for signal tracking
     db_path: Path = Path.home() / ".weather-edge" / "signals.db"

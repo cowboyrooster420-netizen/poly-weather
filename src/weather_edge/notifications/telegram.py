@@ -90,11 +90,16 @@ class TelegramNotifier:
         if high_edge_threshold is None:
             high_edge_threshold = get_settings().telegram_high_edge
 
+        # Send individual alerts for top high-edge signals (capped at 10)
+        high_edge = sorted(
+            [s for s in signals if abs(s.edge) >= high_edge_threshold],
+            key=lambda s: abs(s.edge),
+            reverse=True,
+        )[:10]
         high_edge_count = 0
-        for signal in signals:
-            if abs(signal.edge) >= high_edge_threshold and signal.confidence > 0:
-                await self.notify_signal(signal)
-                high_edge_count += 1
+        for signal in high_edge:
+            await self.notify_signal(signal)
+            high_edge_count += 1
 
         await self.notify_summary(signals)
 
