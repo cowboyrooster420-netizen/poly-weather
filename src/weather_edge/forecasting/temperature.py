@@ -105,7 +105,21 @@ class TemperatureModel:
 
         target_time = params.target_date
         now = datetime.now(timezone.utc)
-        lead_time_hours = max(0, (target_time - now).total_seconds() / 3600)
+        lead_time_hours = (target_time - now).total_seconds() / 3600
+
+        # Reject past dates and targets beyond ensemble range (~16 days)
+        if lead_time_hours < -6:
+            return ProbabilityEstimate(
+                probability=0.5, raw_probability=0.5, confidence=0.0,
+                lead_time_hours=0, details="Target date is in the past",
+            )
+        if lead_time_hours > 384:
+            return ProbabilityEstimate(
+                probability=0.5, raw_probability=0.5, confidence=0.0,
+                lead_time_hours=lead_time_hours,
+                details="Target date beyond ensemble forecast range",
+            )
+        lead_time_hours = max(0, lead_time_hours)
 
         probs: list[tuple[float, float, float]] = []  # (raw, cal, weight)
         sources: list[str] = []
