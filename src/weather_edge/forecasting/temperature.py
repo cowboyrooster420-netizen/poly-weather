@@ -92,12 +92,18 @@ class TemperatureModel:
                 lead_time_hours=0, details="No threshold specified",
             )
 
+        if params.target_date is None:
+            return ProbabilityEstimate(
+                probability=0.5, raw_probability=0.5, confidence=0.0,
+                lead_time_hours=0, details="No target date specified",
+            )
+
         # Convert threshold to Celsius for ensemble comparison (Open-Meteo returns C)
         threshold_c = threshold
         if params.unit.upper() == "F":
             threshold_c = _fahrenheit_to_celsius(threshold)
 
-        target_time = params.target_date or datetime.now(timezone.utc)
+        target_time = params.target_date
         now = datetime.now(timezone.utc)
         lead_time_hours = max(0, (target_time - now).total_seconds() / 3600)
 

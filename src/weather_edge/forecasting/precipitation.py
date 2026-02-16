@@ -107,12 +107,18 @@ class PrecipitationModel:
                 lead_time_hours=0, details="No threshold specified",
             )
 
+        if params.target_date is None:
+            return ProbabilityEstimate(
+                probability=0.5, raw_probability=0.5, confidence=0.0,
+                lead_time_hours=0, details="No target date specified",
+            )
+
         # Convert threshold to mm (Open-Meteo returns mm)
         threshold_mm = threshold
         if params.unit.lower() in ("in", "inches"):
             threshold_mm = _inches_to_mm(threshold)
 
-        target_time = params.target_date or datetime.now(timezone.utc)
+        target_time = params.target_date
         now = datetime.now(timezone.utc)
         lead_time_hours = max(0, (target_time - now).total_seconds() / 3600)
 

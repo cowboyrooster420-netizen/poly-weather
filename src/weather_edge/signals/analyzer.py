@@ -76,6 +76,9 @@ def generate_signal(
     if abs(edge) < settings.min_edge:
         return None
 
+    if estimate.confidence <= 0:
+        return None
+
     direction = "YES" if edge > 0 else "NO"
 
     kelly = compute_kelly(

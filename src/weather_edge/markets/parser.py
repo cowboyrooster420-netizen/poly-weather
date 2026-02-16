@@ -58,7 +58,7 @@ _HURRICANE_PATTERN = re.compile(
 
 # --- Location extraction ---
 _LOCATION_PATTERN = re.compile(
-    r"\bin\s+([A-Z][a-zA-Z\s,]+?)(?:\s+(?:on|by|before|during|this|next|in\s+\d|exceed|hit|reach|drop|fall|see|break|go|top|surpass|get|have|record|temperature|temp|rain|snow|precipitation)|\?|$)",
+    r"\bin\s+([A-Z][a-zA-Z\s,]+?)(?:\s+(?:on|by|be|before|during|this|next|in\s+\d|exceed|hit|reach|drop|fall|see|break|go|top|surpass|get|have|record|temperature|temp|rain|snow|precipitation)|\?|$)",
     re.IGNORECASE,
 )
 

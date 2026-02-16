@@ -92,7 +92,7 @@ class TelegramNotifier:
 
         high_edge_count = 0
         for signal in signals:
-            if abs(signal.edge) >= high_edge_threshold:
+            if abs(signal.edge) >= high_edge_threshold and signal.confidence > 0:
                 await self.notify_signal(signal)
                 high_edge_count += 1
 
