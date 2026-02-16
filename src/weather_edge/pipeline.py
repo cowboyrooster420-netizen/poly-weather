@@ -140,9 +140,19 @@ async def fetch_weather_data(
 
     results: dict[LatLon, tuple] = {}
 
-    # Fetch concurrently with asyncio.gather
+    # Rate-limit concurrent fetches to avoid Open-Meteo 429s.
+    # Each location = 2 API calls (GFS + ECMWF), so 3 concurrent locations = 6 requests.
+    sem = asyncio.Semaphore(3)
+
+    async def _throttled_fetch(lat: float, lon: float) -> tuple:
+        async with sem:
+            result = await _fetch_weather_for_location(lat, lon)
+            # Small delay between batches to stay under rate limits
+            await asyncio.sleep(1.0)
+            return result
+
     latlon_list = list(locations.keys())
-    coros = [_fetch_weather_for_location(ll[0], ll[1]) for ll in latlon_list]
+    coros = [_throttled_fetch(ll[0], ll[1]) for ll in latlon_list]
     fetched = await asyncio.gather(*coros, return_exceptions=True)
 
     for latlon, result in zip(latlon_list, fetched):
