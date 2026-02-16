@@ -53,7 +53,7 @@ def format_table(signals: list[Signal], console: Console | None = None) -> None:
             f"{s.market_prob:.1%}",
             f"{s.confidence:.0%}",
             s.market_type,
-            s.location[:16],
+            (s.location or "")[:16],
             f"{s.lead_time_hours:.0f}",
             s.question[:80],
         )

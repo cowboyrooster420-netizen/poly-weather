@@ -91,7 +91,7 @@ def generate_signal(
     location = ""
     market_type = "unknown"
     if market.params:
-        location = market.params.location
+        location = market.params.location or ""
         market_type = market.params.market_type.value
 
     return Signal(

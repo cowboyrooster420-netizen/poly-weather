@@ -142,6 +142,40 @@ class TestRegexParse:
         assert params.threshold_upper == 10.0
         assert params.unit == "C"
 
+    def test_temperature_bucket_exact(self):
+        """Polymarket single-degree bucket: 'be 7°C on' → BETWEEN 6.5 and 7.5."""
+        params = _regex_parse(
+            "Will the highest temperature in London be 7°C on February 16?"
+        )
+        assert params is not None
+        assert params.market_type == MarketType.TEMPERATURE
+        assert params.comparison == Comparison.BETWEEN
+        assert params.threshold == 6.5
+        assert params.threshold_upper == 7.5
+        assert params.unit == "C"
+
+    def test_temperature_bucket_or_below(self):
+        """Polymarket edge bucket: 'be 4°C or below'."""
+        params = _regex_parse(
+            "Will the highest temperature in London be 4°C or below on February 16?"
+        )
+        assert params is not None
+        assert params.market_type == MarketType.TEMPERATURE
+        assert params.comparison == Comparison.BELOW
+        assert params.threshold == 4.0
+        assert params.unit == "C"
+
+    def test_temperature_bucket_or_higher(self):
+        """Polymarket edge bucket: 'be 12°C or higher'."""
+        params = _regex_parse(
+            "Will the highest temperature in London be 12°C or higher on February 16?"
+        )
+        assert params is not None
+        assert params.market_type == MarketType.TEMPERATURE
+        assert params.comparison == Comparison.ABOVE
+        assert params.threshold == 12.0
+        assert params.unit == "C"
+
     def test_temperature_no_period(self):
         """Temperature markets should never get period_start/period_end."""
         params = _regex_parse("Will the temperature in Phoenix exceed 120F in July?")

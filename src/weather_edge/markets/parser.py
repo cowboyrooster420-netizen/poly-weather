@@ -46,6 +46,21 @@ _TEMP_BETWEEN_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Polymarket bucket: "be 7°C on" → single-degree bucket (BETWEEN 6.5 and 7.5)
+_TEMP_BUCKET_EXACT_PATTERN = re.compile(
+    r"(?:highest|lowest|high|low)?\s*temperature.*?"
+    r"\bbe\s+(\d+(?:\.\d+)?)\s*°\s*([FfCc])\b"
+    r"(?!\s*or\b)",  # NOT followed by "or below"/"or higher"
+    re.IGNORECASE,
+)
+
+# Polymarket bucket: "be 4°C or below" / "be 12°C or higher"
+_TEMP_BUCKET_EDGE_PATTERN = re.compile(
+    r"(?:highest|lowest|high|low)?\s*temperature.*?"
+    r"\bbe\s+(\d+(?:\.\d+)?)\s*°\s*([FfCc])\s+or\s+(below|lower|higher|above)",
+    re.IGNORECASE,
+)
+
 _TEMP_DEGREES_PATTERN = re.compile(
     r"(\d+(?:\.\d+)?)\s*°?\s*([FfCc])",
     re.IGNORECASE,
@@ -224,9 +239,33 @@ def _regex_parse(text: str) -> MarketParams | None:
         threshold = float(precip_match.group(1))
         unit = "in" if "inch" in text.lower() or "in" in precip_match.group(0).lower() else "mm"
 
-    # Check temperature (between) — before above/below so "between 45 and 50F" isn't
-    # partially captured as a simple above pattern
+    # Polymarket bucket patterns — most specific, check first
+    # "be 4°C or below" / "be 12°C or higher"
     if market_type != MarketType.PRECIPITATION:
+        bucket_edge = _TEMP_BUCKET_EDGE_PATTERN.search(text)
+        if bucket_edge:
+            market_type = MarketType.TEMPERATURE
+            threshold = float(bucket_edge.group(1))
+            unit = bucket_edge.group(2).upper()
+            direction = bucket_edge.group(3).lower()
+            if direction in ("below", "lower"):
+                comparison = Comparison.BELOW
+            else:
+                comparison = Comparison.ABOVE
+
+    # "be 7°C on" — single-degree bucket → BETWEEN (val - 0.5, val + 0.5)
+    if market_type != MarketType.PRECIPITATION and market_type != MarketType.TEMPERATURE:
+        bucket_exact = _TEMP_BUCKET_EXACT_PATTERN.search(text)
+        if bucket_exact:
+            val = float(bucket_exact.group(1))
+            market_type = MarketType.TEMPERATURE
+            threshold = val - 0.5
+            threshold_upper = val + 0.5
+            unit = bucket_exact.group(2).upper()
+            comparison = Comparison.BETWEEN
+
+    # Check temperature (between) — "between 45 and 50F"
+    if market_type != MarketType.PRECIPITATION and market_type != MarketType.TEMPERATURE:
         temp_btwn = _TEMP_BETWEEN_PATTERN.search(text)
         if temp_btwn:
             market_type = MarketType.TEMPERATURE
@@ -237,12 +276,13 @@ def _regex_parse(text: str) -> MarketParams | None:
             comparison = Comparison.BETWEEN
 
     # Check temperature (below)
-    temp_below_match = _TEMP_BELOW_PATTERN.search(text)
-    if temp_below_match and market_type != MarketType.TEMPERATURE:
-        market_type = MarketType.TEMPERATURE
-        threshold = float(temp_below_match.group(1))
-        unit = temp_below_match.group(2).upper()
-        comparison = Comparison.BELOW
+    if market_type != MarketType.TEMPERATURE and market_type != MarketType.PRECIPITATION:
+        temp_below_match = _TEMP_BELOW_PATTERN.search(text)
+        if temp_below_match:
+            market_type = MarketType.TEMPERATURE
+            threshold = float(temp_below_match.group(1))
+            unit = temp_below_match.group(2).upper()
+            comparison = Comparison.BELOW
 
     # Check temperature (above) — only if not already matched
     if market_type not in (MarketType.TEMPERATURE, MarketType.PRECIPITATION):
@@ -392,7 +432,7 @@ async def _llm_parse(question: str, description: str) -> MarketParams | None:
 
         return MarketParams(
             market_type=market_type,
-            location=data.get("location", ""),
+            location=data.get("location") or "",
             threshold=float(data["threshold"]) if data.get("threshold") is not None else None,
             threshold_upper=(
                 float(data["threshold_upper"])
