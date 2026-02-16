@@ -16,18 +16,27 @@ from weather_edge.common.llm import ask_haiku
 
 logger = logging.getLogger(__name__)
 
-# Regex patterns for obvious weather markets
-_WEATHER_KEYWORDS = re.compile(
-    r"\b("
-    r"temperature|temp|degrees?|fahrenheit|celsius"
-    r"|rain(fall)?|precipitation|precip|snow(fall)?|inches?\s+of\s+(rain|snow)"
-    r"|hurricane|tropical\s+storm|cyclone|typhoon"
-    r"|heat\s*wave|cold\s*snap|freeze|frost"
-    r"|high\s+of|low\s+of|record\s+high|record\s+low"
-    r"|weather|forecast"
-    r"|wind\s*(speed|chill|gust)"
-    r"|tornado|blizzard|ice\s+storm"
-    r")\b",
+# Strong indicators: specific meteorological terms that almost always mean weather
+_STRONG_KEYWORDS = re.compile(
+    r"("
+    r"\btemperature\b|\bfahrenheit\b|\bcelsius\b"
+    r"|°[FfCc]|\d+\s*°\s*[FfCc]"
+    r"|\brain(?:fall)?\b|\bprecipitation\b|\bprecip\b|\bsnow(?:fall)?\b"
+    r"|\binches?\s+of\s+(?:rain|snow)\b"
+    r"|\bhurricane\b|\btropical\s+storm\b|\bcyclone\b|\btyphoon\b"
+    r"|\bheat\s*wave\b|\bcold\s*snap\b|\bfreeze\b|\bfrost\b"
+    r"|\bhigh\s+of\b|\blow\s+of\b|\brecord\s+high\b|\brecord\s+low\b"
+    r"|\bwind\s*(?:speed|chill|gust)\b"
+    r"|\btornado\b|\bblizzard\b|\bice\s+storm\b"
+    r"|\bhighest\s+temperature\b|\blowest\s+temperature\b"
+    r"|\btotal\s+rainfall\b|\btotal\s+precipitation\b"
+    r")",
+    re.IGNORECASE,
+)
+
+# Weak indicators: only count these if combined with strong ones
+_WEAK_KEYWORDS = re.compile(
+    r"\b(temp|degrees?|weather|forecast)\b",
     re.IGNORECASE,
 )
 
@@ -60,24 +69,28 @@ async def classify_market(question: str, description: str = "") -> tuple[bool, f
     Returns:
         (is_weather, confidence) tuple
     """
-    # Stage 1: Regex fast path
+    # Check anti-patterns first (search both question + description)
     text = f"{question} {description}"
-
-    # Check anti-patterns first
     if _ANTI_PATTERNS.search(text):
         return False, 0.95
 
-    # Check weather keywords
-    matches = _WEATHER_KEYWORDS.findall(text)
-    if len(matches) >= 2:
+    # Stage 1: Regex fast path — only search the QUESTION for keywords.
+    # Descriptions often contain tangential weather references in non-weather markets.
+    strong_matches = _STRONG_KEYWORDS.findall(question)
+    if len(strong_matches) >= 1:
         return True, 0.95
-    if len(matches) == 1:
-        return True, 0.85
-    if len(matches) == 0:
-        return False, 0.85
 
-    # Stage 2: LLM fallback for ambiguous cases
-    return await _llm_classify(question, description)
+    # Weak keyword alone in question isn't enough — check description too for backup
+    weak_matches = _WEAK_KEYWORDS.findall(question)
+    if weak_matches:
+        # Weak keyword in question + strong keyword in description → likely weather
+        if _STRONG_KEYWORDS.search(description):
+            return True, 0.80
+        # Weak keyword only → not weather
+        return False, 0.70
+
+    # No keywords at all → not weather
+    return False, 0.90
 
 
 async def _llm_classify(question: str, description: str) -> tuple[bool, float]:

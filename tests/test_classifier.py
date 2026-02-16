@@ -121,3 +121,79 @@ async def test_classify_crypto_storm_not_weather():
         description="Cryptocurrency market for Storm (STORM) token.",
     )
     assert is_weather is False
+
+
+# --- False positive rejection tests (previously burned Haiku credits) ---
+
+
+@pytest.mark.asyncio
+async def test_classify_weather_in_description_only():
+    """'weather' only in description, not question — should NOT classify as weather."""
+    is_weather, _ = await classify_market(
+        "Will Bitcoin reach $100,000 by end of year?",
+        description="This market tracks the price of Bitcoin regardless of weather or forecast conditions.",
+    )
+    assert is_weather is False
+
+
+@pytest.mark.asyncio
+async def test_classify_forecast_in_description_only():
+    """'forecast' only in description — should NOT classify as weather."""
+    is_weather, _ = await classify_market(
+        "Will the Fed raise interest rates in March?",
+        description="Based on current economic forecasts and weather conditions.",
+    )
+    assert is_weather is False
+
+
+@pytest.mark.asyncio
+async def test_classify_generic_description_mentioning_weather():
+    """Non-weather market with weather term in description only."""
+    is_weather, _ = await classify_market(
+        "Will Tesla stock reach $500?",
+        description="Market resolves regardless of weather. Check the forecast for details.",
+    )
+    assert is_weather is False
+
+
+# --- Polymarket exact format tests ---
+
+
+@pytest.mark.asyncio
+async def test_classify_polymarket_temp_celsius():
+    """Polymarket: 'highest temperature in London be 7°C on February 16'."""
+    is_weather, conf = await classify_market(
+        "Will the highest temperature in London be 7°C on February 16?"
+    )
+    assert is_weather is True
+    assert conf >= 0.90
+
+
+@pytest.mark.asyncio
+async def test_classify_polymarket_temp_fahrenheit_range():
+    """Polymarket: '32-33°F' bucket format."""
+    is_weather, conf = await classify_market(
+        "Will the highest temperature in New York City be 32-33°F on February 16?"
+    )
+    assert is_weather is True
+    assert conf >= 0.90
+
+
+@pytest.mark.asyncio
+async def test_classify_polymarket_rainfall_inch_mark():
+    """Polymarket: 'total rainfall in Seattle 3-4\"'."""
+    is_weather, conf = await classify_market(
+        'Will total rainfall in Seattle, WA in February 2026 be 3-4"?'
+    )
+    assert is_weather is True
+    assert conf >= 0.90
+
+
+@pytest.mark.asyncio
+async def test_classify_polymarket_negative_celsius():
+    """Polymarket: negative temp '-2°C'."""
+    is_weather, conf = await classify_market(
+        "Will the highest temperature in Toronto be -2°C on February 17?"
+    )
+    assert is_weather is True
+    assert conf >= 0.90

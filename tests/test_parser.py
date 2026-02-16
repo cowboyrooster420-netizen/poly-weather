@@ -184,6 +184,125 @@ class TestRegexParse:
         assert params.period_start is None
         assert params.period_end is None
 
+    # --- Polymarket F-range bucket tests ---
+
+    def test_f_range_bucket(self):
+        """Polymarket F-range: '32-33°F' → BETWEEN."""
+        params = _regex_parse(
+            "Will the highest temperature in New York City be 32-33°F on February 16?"
+        )
+        assert params is not None
+        assert params.market_type == MarketType.TEMPERATURE
+        assert params.comparison == Comparison.BETWEEN
+        assert params.threshold == 32.0
+        assert params.threshold_upper == 33.0
+        assert params.unit == "F"
+
+    def test_f_range_bucket_higher_range(self):
+        """Polymarket F-range: '38-39°F'."""
+        params = _regex_parse(
+            "Will the highest temperature in Atlanta be 38-39°F on February 16?"
+        )
+        assert params is not None
+        assert params.comparison == Comparison.BETWEEN
+        assert params.threshold == 38.0
+        assert params.threshold_upper == 39.0
+        assert params.unit == "F"
+
+    # --- Negative temperature tests (Toronto) ---
+
+    def test_negative_celsius_bucket(self):
+        """Polymarket: 'be -2°C on' → BETWEEN -2.5 and -1.5."""
+        params = _regex_parse(
+            "Will the highest temperature in Toronto be -2°C on February 17?"
+        )
+        assert params is not None
+        assert params.market_type == MarketType.TEMPERATURE
+        assert params.comparison == Comparison.BETWEEN
+        assert params.threshold == -2.5
+        assert params.threshold_upper == -1.5
+        assert params.unit == "C"
+
+    def test_negative_celsius_or_below(self):
+        """Polymarket: 'be -5°C or below'."""
+        params = _regex_parse(
+            "Will the highest temperature in Toronto be -5°C or below on February 17?"
+        )
+        assert params is not None
+        assert params.comparison == Comparison.BELOW
+        assert params.threshold == -5.0
+        assert params.unit == "C"
+
+    def test_negative_f_range(self):
+        """Negative F-range: '-2--1°F'."""
+        params = _regex_parse(
+            "Will the highest temperature in Chicago be -2-0°F on January 20?"
+        )
+        assert params is not None
+        assert params.comparison == Comparison.BETWEEN
+        assert params.threshold == -2.0
+        assert params.threshold_upper == 0.0
+
+    # --- Precipitation inch-mark tests ---
+
+    def test_precip_inch_mark_range(self):
+        """Polymarket: '3-4"' → BETWEEN 3 and 4 inches."""
+        params = _regex_parse(
+            'Will total rainfall in Seattle, WA in February 2026 be 3-4"?'
+        )
+        assert params is not None
+        assert params.market_type == MarketType.PRECIPITATION
+        assert params.comparison == Comparison.BETWEEN
+        assert params.threshold == 3.0
+        assert params.threshold_upper == 4.0
+        assert params.unit == "in"
+
+    def test_precip_inch_mark_above(self):
+        """Polymarket: '>8"' → ABOVE 8 inches."""
+        params = _regex_parse(
+            'Will total rainfall in Seattle, WA in February 2026 be >8"?'
+        )
+        assert params is not None
+        assert params.market_type == MarketType.PRECIPITATION
+        assert params.comparison == Comparison.ABOVE
+        assert params.threshold == 8.0
+        assert params.unit == "in"
+
+    def test_precip_inch_mark_below(self):
+        """Polymarket: '<3"' → BELOW 3 inches."""
+        params = _regex_parse(
+            'Will total rainfall in Seattle, WA in February 2026 be <3"?'
+        )
+        assert params is not None
+        assert params.market_type == MarketType.PRECIPITATION
+        assert params.comparison == Comparison.BELOW
+        assert params.threshold == 3.0
+        assert params.unit == "in"
+
+    def test_precip_period_month_with_year(self):
+        """'in February 2026' should populate period_start/period_end."""
+        params = _regex_parse(
+            'Will total rainfall in Seattle, WA in February 2026 be 3-4"?'
+        )
+        assert params is not None
+        assert params.period_start is not None
+        assert params.period_end is not None
+        assert params.period_start.year == 2026
+        assert params.period_start.month == 2
+        assert params.period_start.day == 1
+        assert params.period_end.month == 2
+        assert params.period_end.day == 28
+
+    def test_date_extraction_no_year(self):
+        """'on February 16' (no year) still extracts a date."""
+        params = _regex_parse(
+            "Will the highest temperature in London be 7°C on February 16?"
+        )
+        assert params is not None
+        assert params.target_date is not None
+        assert params.target_date.month == 2
+        assert params.target_date.day == 16
+
 
 # --- Stage 2: LLM fallback tests ---
 

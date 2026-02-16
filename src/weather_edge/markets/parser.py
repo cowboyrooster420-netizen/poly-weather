@@ -49,7 +49,7 @@ _TEMP_BETWEEN_PATTERN = re.compile(
 # Polymarket bucket: "be 7°C on" → single-degree bucket (BETWEEN 6.5 and 7.5)
 _TEMP_BUCKET_EXACT_PATTERN = re.compile(
     r"(?:highest|lowest|high|low)?\s*temperature.*?"
-    r"\bbe\s+(\d+(?:\.\d+)?)\s*°\s*([FfCc])\b"
+    r"\bbe\s+(-?\d+(?:\.\d+)?)\s*°\s*([FfCc])\b"
     r"(?!\s*or\b)",  # NOT followed by "or below"/"or higher"
     re.IGNORECASE,
 )
@@ -57,12 +57,18 @@ _TEMP_BUCKET_EXACT_PATTERN = re.compile(
 # Polymarket bucket: "be 4°C or below" / "be 12°C or higher"
 _TEMP_BUCKET_EDGE_PATTERN = re.compile(
     r"(?:highest|lowest|high|low)?\s*temperature.*?"
-    r"\bbe\s+(\d+(?:\.\d+)?)\s*°\s*([FfCc])\s+or\s+(below|lower|higher|above)",
+    r"\bbe\s+(-?\d+(?:\.\d+)?)\s*°\s*([FfCc])\s+or\s+(below|lower|higher|above)",
+    re.IGNORECASE,
+)
+
+# Polymarket F-range bucket: "32-33°F", "38-39°F" → BETWEEN
+_TEMP_RANGE_PATTERN = re.compile(
+    r"(-?\d+(?:\.\d+)?)\s*[-–]\s*(-?\d+(?:\.\d+)?)\s*°\s*([FfCc])",
     re.IGNORECASE,
 )
 
 _TEMP_DEGREES_PATTERN = re.compile(
-    r"(\d+(?:\.\d+)?)\s*°?\s*([FfCc])",
+    r"(-?\d+(?:\.\d+)?)\s*°?\s*([FfCc])",
     re.IGNORECASE,
 )
 
@@ -86,6 +92,19 @@ _PRECIP_BETWEEN_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Polymarket precipitation inch-mark: '3-4"' / '<3"' / '>8"'
+_PRECIP_RANGE_INCH_PATTERN = re.compile(
+    r"(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)\s*\"",
+)
+
+_PRECIP_ABOVE_INCH_PATTERN = re.compile(
+    r"(?:>|(?:more|greater)\s+than)\s*(\d+(?:\.\d+)?)\s*\"",
+)
+
+_PRECIP_BELOW_INCH_PATTERN = re.compile(
+    r"(?:<|(?:less|fewer)\s+than)\s*(\d+(?:\.\d+)?)\s*\"",
+)
+
 # --- Hurricane patterns ---
 _HURRICANE_PATTERN = re.compile(
     r"\b(?:hurricane|tropical\s+storm|cyclone|typhoon)\b",
@@ -101,13 +120,21 @@ _LOCATION_PATTERN = re.compile(
 # --- Date extraction ---
 _DATE_PATTERNS = [
     # "on July 4, 2025" / "on July 4th, 2025"
-    re.compile(r"on\s+(\w+\s+\d{1,2}(?:st|nd|rd|th)?,?\s*\d{4})", re.IGNORECASE),
+    re.compile(r"\bon\s+(\w+\s+\d{1,2}(?:st|nd|rd|th)?,?\s*\d{4})", re.IGNORECASE),
+    # "on February 16" / "on February 16th" (no year)
+    re.compile(r"\bon\s+(\w+\s+\d{1,2}(?:st|nd|rd|th)?)\b", re.IGNORECASE),
     # "by January 15"
-    re.compile(r"by\s+(\w+\s+\d{1,2}(?:st|nd|rd|th)?,?\s*\d{0,4})", re.IGNORECASE),
+    re.compile(r"\bby\s+(\w+\s+\d{1,2}(?:st|nd|rd|th)?,?\s*\d{0,4})", re.IGNORECASE),
     # "this week" / "this month"
     re.compile(r"(this\s+(?:week|weekend|month))", re.IGNORECASE),
     # "next Monday" etc
     re.compile(r"(next\s+\w+)", re.IGNORECASE),
+    # "in February 2026" — month name with year
+    re.compile(
+        r"\bin\s+((?:january|february|march|april|may|june|july|august|september|october|november|december"
+        r"|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\s+\d{4})\b",
+        re.IGNORECASE,
+    ),
     # "in February" / "in March" — bare month name
     re.compile(
         r"\bin\s+(january|february|march|april|may|june|july|august|september|october|november|december"
@@ -166,6 +193,17 @@ def _resolve_period(date_str: str) -> tuple[datetime, datetime] | None:
         end = start.replace(day=last_day, hour=23, minute=59, second=59)
         return start, end
 
+    # Month + year: "february 2026"
+    parts = lower.split()
+    if len(parts) == 2 and parts[1].isdigit():
+        month_num = _MONTH_NAMES.get(parts[0])
+        if month_num is not None:
+            year = int(parts[1])
+            start = datetime(year, month_num, 1, tzinfo=timezone.utc)
+            last_day = calendar.monthrange(year, month_num)[1]
+            end = datetime(year, month_num, last_day, 23, 59, 59, tzinfo=timezone.utc)
+            return start, end
+
     # Bare month name
     month_num = _MONTH_NAMES.get(lower)
     if month_num is not None:
@@ -219,7 +257,7 @@ def _regex_parse(text: str) -> MarketParams | None:
     if _HURRICANE_PATTERN.search(text):
         market_type = MarketType.HURRICANE
 
-    # Check precipitation — BETWEEN first, then ABOVE
+    # Check precipitation — BETWEEN first, then range/above/below inch-mark, then ABOVE
     threshold_upper = None
     precip_btwn = _PRECIP_BETWEEN_PATTERN.search(text)
     if precip_btwn:
@@ -232,6 +270,34 @@ def _regex_parse(text: str) -> MarketParams | None:
             threshold_upper = float(hi)
             comparison = Comparison.BETWEEN
             unit = "in" if "inch" in text.lower() or "in" in precip_btwn.group(0).lower() else "mm"
+
+    # Polymarket inch-mark range: '3-4"' → BETWEEN
+    if market_type != MarketType.PRECIPITATION:
+        precip_range = _PRECIP_RANGE_INCH_PATTERN.search(text)
+        if precip_range:
+            market_type = MarketType.PRECIPITATION
+            threshold = float(precip_range.group(1))
+            threshold_upper = float(precip_range.group(2))
+            comparison = Comparison.BETWEEN
+            unit = "in"
+
+    # Polymarket inch-mark above: '>8"'
+    if market_type != MarketType.PRECIPITATION:
+        precip_above = _PRECIP_ABOVE_INCH_PATTERN.search(text)
+        if precip_above:
+            market_type = MarketType.PRECIPITATION
+            threshold = float(precip_above.group(1))
+            comparison = Comparison.ABOVE
+            unit = "in"
+
+    # Polymarket inch-mark below: '<3"'
+    if market_type != MarketType.PRECIPITATION:
+        precip_below = _PRECIP_BELOW_INCH_PATTERN.search(text)
+        if precip_below:
+            market_type = MarketType.PRECIPITATION
+            threshold = float(precip_below.group(1))
+            comparison = Comparison.BELOW
+            unit = "in"
 
     precip_match = _PRECIP_PATTERN.search(text)
     if precip_match and market_type != MarketType.PRECIPITATION:
@@ -262,6 +328,16 @@ def _regex_parse(text: str) -> MarketParams | None:
             threshold = val - 0.5
             threshold_upper = val + 0.5
             unit = bucket_exact.group(2).upper()
+            comparison = Comparison.BETWEEN
+
+    # Polymarket F-range: "32-33°F" → BETWEEN
+    if market_type != MarketType.PRECIPITATION and market_type != MarketType.TEMPERATURE:
+        temp_range = _TEMP_RANGE_PATTERN.search(text)
+        if temp_range:
+            market_type = MarketType.TEMPERATURE
+            threshold = float(temp_range.group(1))
+            threshold_upper = float(temp_range.group(2))
+            unit = temp_range.group(3).upper()
             comparison = Comparison.BETWEEN
 
     # Check temperature (between) — "between 45 and 50F"
