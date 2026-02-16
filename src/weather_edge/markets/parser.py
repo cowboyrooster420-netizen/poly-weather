@@ -93,7 +93,7 @@ def _parse_date_str(date_str: str) -> datetime | None:
             dt = datetime.strptime(cleaned, fmt)
             if dt.year == 1900:  # No year provided
                 now = datetime.now(timezone.utc)
-                dt = dt.replace(year=now.year)
+                dt = dt.replace(year=now.year, tzinfo=timezone.utc)
                 if dt < now:
                     dt = dt.replace(year=now.year + 1)
             return dt.replace(tzinfo=timezone.utc)
