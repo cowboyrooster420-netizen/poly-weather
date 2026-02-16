@@ -36,3 +36,32 @@ def find_closest_time_idx(times: list[datetime], target: datetime) -> int | None
         )
 
     return idx
+
+
+def find_period_time_indices(
+    times: list[datetime],
+    period_start: datetime,
+    period_end: datetime,
+) -> list[int]:
+    """Return indices of *times* that fall within [period_start, period_end]."""
+    return [
+        i for i, t in enumerate(times)
+        if period_start <= t <= period_end
+    ]
+
+
+def compute_coverage_fraction(
+    times: list[datetime],
+    period_start: datetime,
+    period_end: datetime,
+) -> float:
+    """Fraction of the requested period covered by *times*.
+
+    Returns 0.0 when the period is zero-length or no times overlap,
+    up to 1.0 when every hour is present.
+    """
+    total_hours = (period_end - period_start).total_seconds() / 3600
+    if total_hours <= 0:
+        return 0.0
+    n_hits = len(find_period_time_indices(times, period_start, period_end))
+    return min(1.0, n_hits / total_hours)

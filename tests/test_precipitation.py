@@ -207,3 +207,137 @@ async def test_precipitation_with_noaa(heavy_rain_ecmwf, noaa_forecast, now):
     estimate = await model.estimate(params, gfs=None, ecmwf=heavy_rain_ecmwf, noaa=noaa_forecast)
 
     assert "NOAA/NWS" in estimate.sources_used
+
+
+# --- Period aggregation tests ---
+
+
+@pytest.fixture
+def monthly_ecmwf(now):
+    """ECMWF ensemble spanning 16 days (~half a month) with moderate rain."""
+    np.random.seed(99)
+    n_hours = 16 * 24  # 384 hours (16 days)
+    times = [now + timedelta(hours=i) for i in range(n_hours)]
+    return EnsembleForecast(
+        source="ecmwf", lat=47.61, lon=-122.33,
+        times=times,
+        temperature_2m=np.random.normal(8, 2, (n_hours, 51)),
+        # ~1mm/h average → ~384mm over 16 days
+        precipitation=np.random.exponential(1.0, (n_hours, 51)),
+    )
+
+
+@pytest.mark.asyncio
+async def test_period_aggregation_monthly(now):
+    """Period-aggregated path should give meaningful probability, not 99.9%.
+
+    The key insight: without period aggregation, a single hourly value (~1mm)
+    is compared to 127mm (5in) → P≈100%. With aggregation over 16 days, the
+    summed precipitation (~380mm) is compared to the threshold properly.
+    """
+    np.random.seed(99)
+    n_hours = 16 * 24  # 384 hours
+    times = [now + timedelta(hours=i) for i in range(n_hours)]
+    # Low rain rate: ~0.1mm/h → sum ~38mm over 16 days
+    ecmwf = EnsembleForecast(
+        source="ecmwf", lat=47.61, lon=-122.33,
+        times=times,
+        temperature_2m=np.random.normal(8, 2, (n_hours, 51)),
+        precipitation=np.random.exponential(0.1, (n_hours, 51)),
+    )
+
+    params = MarketParams(
+        market_type=MarketType.PRECIPITATION,
+        location="Seattle, WA",
+        lat_lon=(47.61, -122.33),
+        threshold=2.0,  # 2 inches = ~50.8mm, above the ~38mm median sum
+        comparison=Comparison.ABOVE,
+        unit="in",
+        target_date=now + timedelta(days=8),
+        period_start=now,
+        period_end=now + timedelta(days=15, hours=23, minutes=59, seconds=59),
+    )
+
+    model = PrecipitationModel()
+    estimate = await model.estimate(params, gfs=None, ecmwf=ecmwf, noaa=None)
+
+    # With period aggregation, we get a proper probability
+    assert 0.001 < estimate.probability < 0.999
+    assert "period" in estimate.details.lower()
+
+
+@pytest.mark.asyncio
+async def test_between_comparison(monthly_ecmwf, now):
+    """P(5in < X < 6in) should be strictly between 0 and 1."""
+    params = MarketParams(
+        market_type=MarketType.PRECIPITATION,
+        location="Seattle, WA",
+        lat_lon=(47.61, -122.33),
+        threshold=5.0,
+        threshold_upper=6.0,
+        comparison=Comparison.BETWEEN,
+        unit="in",
+        target_date=now + timedelta(days=8),
+        period_start=now,
+        period_end=now + timedelta(days=15, hours=23, minutes=59, seconds=59),
+    )
+
+    model = PrecipitationModel()
+    estimate = await model.estimate(params, gfs=None, ecmwf=monthly_ecmwf, noaa=None)
+
+    assert 0.001 <= estimate.probability <= 0.999
+
+
+@pytest.mark.asyncio
+async def test_single_timestep_still_works(heavy_rain_ecmwf, now):
+    """Existing single-timestep behavior preserved when no period is set."""
+    params = MarketParams(
+        market_type=MarketType.PRECIPITATION,
+        location="Houston, TX",
+        lat_lon=(29.76, -95.37),
+        threshold=0.5,
+        comparison=Comparison.ABOVE,
+        unit="in",
+        target_date=now + timedelta(hours=24),
+        # period_start and period_end are None → single-timestep path
+    )
+
+    model = PrecipitationModel()
+    estimate = await model.estimate(params, gfs=None, ecmwf=heavy_rain_ecmwf, noaa=None)
+
+    assert estimate.probability > 0.15
+    # Should NOT mention "period" in details
+    assert "period" not in estimate.details.lower()
+
+
+@pytest.mark.asyncio
+async def test_partial_coverage_reduces_confidence(now):
+    """When forecast covers <50% of the period, confidence should be low."""
+    np.random.seed(77)
+    # Only 48 hours of data for a 60-day period
+    n_hours = 48
+    times = [now + timedelta(hours=i) for i in range(n_hours)]
+    ecmwf = EnsembleForecast(
+        source="ecmwf", lat=47.61, lon=-122.33,
+        times=times,
+        temperature_2m=np.random.normal(8, 2, (n_hours, 51)),
+        precipitation=np.random.exponential(1.0, (n_hours, 51)),
+    )
+
+    params = MarketParams(
+        market_type=MarketType.PRECIPITATION,
+        location="Seattle, WA",
+        lat_lon=(47.61, -122.33),
+        threshold=5.0,
+        comparison=Comparison.ABOVE,
+        unit="in",
+        target_date=now + timedelta(days=30),
+        period_start=now,
+        period_end=now + timedelta(days=59, hours=23, minutes=59, seconds=59),
+    )
+
+    model = PrecipitationModel()
+    estimate = await model.estimate(params, gfs=None, ecmwf=ecmwf, noaa=None)
+
+    # 48h out of 1440h → ~3% coverage → confidence multiplied by 0.3
+    assert estimate.confidence < 0.3

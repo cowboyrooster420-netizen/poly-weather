@@ -9,6 +9,7 @@ import pytest
 
 from weather_edge.forecasting.temperature import TemperatureModel
 from weather_edge.markets.models import Comparison, MarketParams, MarketType
+from weather_edge.weather.models import EnsembleForecast
 
 
 @pytest.mark.asyncio
@@ -220,3 +221,66 @@ async def test_temperature_single_source_reduced_confidence(ecmwf_forecast, now)
     est_single = await model.estimate(params, gfs=None, ecmwf=ecmwf_forecast, noaa=None)
 
     assert est_single.confidence < est_both.confidence
+
+
+@pytest.mark.asyncio
+async def test_temperature_between(now):
+    """BETWEEN comparison: P(45F < T < 50F) should be meaningful."""
+    np.random.seed(42)
+    times = [now + timedelta(hours=i) for i in range(48)]
+    n = len(times)
+    # Mean ~7C (44.6F), std ~2C — so 45-50F (7.2-10C) captures the upper half
+    ecmwf = EnsembleForecast(
+        source="ecmwf", lat=51.5, lon=-0.12,
+        times=times,
+        temperature_2m=np.random.normal(7, 2, (n, 51)),
+        precipitation=np.zeros((n, 51)),
+    )
+
+    params = MarketParams(
+        market_type=MarketType.TEMPERATURE,
+        location="London, UK",
+        lat_lon=(51.5, -0.12),
+        threshold=45.0,      # lower bound in F
+        threshold_upper=50.0, # upper bound in F
+        comparison=Comparison.BETWEEN,
+        unit="F",
+        target_date=now + timedelta(hours=24),
+    )
+
+    model = TemperatureModel()
+    estimate = await model.estimate(params, gfs=None, ecmwf=ecmwf, noaa=None)
+
+    # Should give a probability strictly between 0 and 1
+    assert 0.01 < estimate.probability < 0.99
+
+
+@pytest.mark.asyncio
+async def test_temperature_between_narrow_band(now):
+    """Very narrow band far from mean should give low probability."""
+    np.random.seed(42)
+    times = [now + timedelta(hours=i) for i in range(48)]
+    n = len(times)
+    # Mean ~35C, asking about 0-5F (-17 to -15C) — way below
+    ecmwf = EnsembleForecast(
+        source="ecmwf", lat=33.45, lon=-112.07,
+        times=times,
+        temperature_2m=np.random.normal(35, 3, (n, 51)),
+        precipitation=np.zeros((n, 51)),
+    )
+
+    params = MarketParams(
+        market_type=MarketType.TEMPERATURE,
+        location="Phoenix, AZ",
+        lat_lon=(33.45, -112.07),
+        threshold=0.0,
+        threshold_upper=5.0,
+        comparison=Comparison.BETWEEN,
+        unit="F",
+        target_date=now + timedelta(hours=24),
+    )
+
+    model = TemperatureModel()
+    estimate = await model.estimate(params, gfs=None, ecmwf=ecmwf, noaa=None)
+
+    assert estimate.probability < 0.01

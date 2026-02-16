@@ -38,6 +38,7 @@ def _compute_ensemble_prob(
     threshold: float,
     comparison: Comparison,
     lead_time_hours: float,
+    threshold_upper: float | None = None,
 ) -> tuple[float, float]:
     """Compute probability from ensemble members.
 
@@ -63,6 +64,15 @@ def _compute_ensemble_prob(
     if comparison == Comparison.ABOVE:
         raw_prob = 1.0 - stats.norm.cdf(threshold, raw_mu, raw_sigma)
         cal_prob = 1.0 - stats.norm.cdf(threshold, mu, sigma)
+    elif comparison == Comparison.BETWEEN and threshold_upper is not None:
+        raw_prob = (
+            stats.norm.cdf(threshold_upper, raw_mu, raw_sigma)
+            - stats.norm.cdf(threshold, raw_mu, raw_sigma)
+        )
+        cal_prob = (
+            stats.norm.cdf(threshold_upper, mu, sigma)
+            - stats.norm.cdf(threshold, mu, sigma)
+        )
     elif comparison == Comparison.BELOW:
         raw_prob = stats.norm.cdf(threshold, raw_mu, raw_sigma)
         cal_prob = stats.norm.cdf(threshold, mu, sigma)
@@ -103,6 +113,12 @@ class TemperatureModel:
         if params.unit.upper() == "F":
             threshold_c = _fahrenheit_to_celsius(threshold)
 
+        threshold_upper_c: float | None = None
+        if params.threshold_upper is not None:
+            threshold_upper_c = params.threshold_upper
+            if params.unit.upper() == "F":
+                threshold_upper_c = _fahrenheit_to_celsius(params.threshold_upper)
+
         target_time = params.target_date
         now = datetime.now(timezone.utc)
         lead_time_hours = (target_time - now).total_seconds() / 3600
@@ -132,6 +148,7 @@ class TemperatureModel:
                 members = ecmwf.temperature_2m[idx, :]
                 raw_p, cal_p = _compute_ensemble_prob(
                     members, threshold_c, params.comparison, lead_time_hours,
+                    threshold_upper_c,
                 )
                 probs.append((raw_p, cal_p, settings.ecmwf_weight))
                 sources.append(f"ECMWF ({ecmwf.n_members} members)")
@@ -147,6 +164,7 @@ class TemperatureModel:
                 members = gfs.temperature_2m[idx, :]
                 raw_p, cal_p = _compute_ensemble_prob(
                     members, threshold_c, params.comparison, lead_time_hours,
+                    threshold_upper_c,
                 )
                 gfs_weight = 1.0 - settings.ecmwf_weight
                 probs.append((raw_p, cal_p, gfs_weight))

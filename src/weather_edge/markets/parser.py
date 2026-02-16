@@ -9,7 +9,8 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timezone
+import calendar
+from datetime import datetime, timedelta, timezone
 
 import anthropic
 
@@ -36,6 +37,15 @@ _TEMP_BELOW_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_TEMP_BETWEEN_PATTERN = re.compile(
+    r"(?:temperature|temp|high|low)?"
+    r".*?"
+    r"between\s+(\d+(?:\.\d+)?)\s*°?\s*([FfCc]?)"
+    r"\s*(?:and|[-–])\s*"
+    r"(\d+(?:\.\d+)?)\s*°?\s*([FfCc])",
+    re.IGNORECASE,
+)
+
 _TEMP_DEGREES_PATTERN = re.compile(
     r"(\d+(?:\.\d+)?)\s*°?\s*([FfCc])",
     re.IGNORECASE,
@@ -47,6 +57,17 @@ _PRECIP_PATTERN = re.compile(
     r".*?"
     r"(?:exceed|above|over|more\s+than|at\s+least)\s+"
     r"(\d+(?:\.\d+)?)\s*(?:inches?|in|mm|cm)",
+    re.IGNORECASE,
+)
+
+# "between 5 and 6 inches of rain" / "precipitation between 3 and 4 inches"
+_PRECIP_BETWEEN_PATTERN = re.compile(
+    r"(?:rain(?:fall)?|precipitation|precip|snow(?:fall)?)?"
+    r".*?"
+    r"between\s+(\d+(?:\.\d+)?)\s*(?:and|[-–])\s*(\d+(?:\.\d+)?)\s*(?:inches?|in|mm|cm)"
+    r"|"
+    r"between\s+(\d+(?:\.\d+)?)\s*(?:and|[-–])\s*(\d+(?:\.\d+)?)\s*(?:inches?|in|mm|cm)"
+    r".*?(?:of\s+)?(?:rain(?:fall)?|precipitation|precip|snow(?:fall)?)",
     re.IGNORECASE,
 )
 
@@ -72,6 +93,12 @@ _DATE_PATTERNS = [
     re.compile(r"(this\s+(?:week|weekend|month))", re.IGNORECASE),
     # "next Monday" etc
     re.compile(r"(next\s+\w+)", re.IGNORECASE),
+    # "in February" / "in March" — bare month name
+    re.compile(
+        r"\bin\s+(january|february|march|april|may|june|july|august|september|october|november|december"
+        r"|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\b",
+        re.IGNORECASE,
+    ),
 ]
 
 _MONTH_NAMES = {
@@ -99,6 +126,43 @@ def _parse_date_str(date_str: str) -> datetime | None:
             return dt.replace(tzinfo=timezone.utc)
         except ValueError:
             continue
+    return None
+
+
+def _resolve_period(date_str: str) -> tuple[datetime, datetime] | None:
+    """Convert a date string into a (period_start, period_end) range.
+
+    Handles bare month names ("February"), "this week", "this month".
+    Returns None when the string doesn't describe a period.
+    """
+    lower = date_str.strip().lower()
+    now = datetime.now(timezone.utc)
+
+    if lower in ("this week",):
+        # Monday 00:00 → Sunday 23:59
+        monday = now - timedelta(days=now.weekday())
+        start = monday.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=6, hours=23, minutes=59, seconds=59)
+        return start, end
+
+    if lower in ("this month",):
+        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        last_day = calendar.monthrange(now.year, now.month)[1]
+        end = start.replace(day=last_day, hour=23, minute=59, second=59)
+        return start, end
+
+    # Bare month name
+    month_num = _MONTH_NAMES.get(lower)
+    if month_num is not None:
+        year = now.year
+        # If the month is already past, assume next year
+        if month_num < now.month:
+            year += 1
+        start = datetime(year, month_num, 1, tzinfo=timezone.utc)
+        last_day = calendar.monthrange(year, month_num)[1]
+        end = datetime(year, month_num, last_day, 23, 59, 59, tzinfo=timezone.utc)
+        return start, end
+
     return None
 
 
@@ -140,22 +204,47 @@ def _regex_parse(text: str) -> MarketParams | None:
     if _HURRICANE_PATTERN.search(text):
         market_type = MarketType.HURRICANE
 
-    # Check precipitation
+    # Check precipitation — BETWEEN first, then ABOVE
+    threshold_upper = None
+    precip_btwn = _PRECIP_BETWEEN_PATTERN.search(text)
+    if precip_btwn:
+        # Groups 1,2 for first alternative; 3,4 for second
+        lo = precip_btwn.group(1) or precip_btwn.group(3)
+        hi = precip_btwn.group(2) or precip_btwn.group(4)
+        if lo and hi:
+            market_type = MarketType.PRECIPITATION
+            threshold = float(lo)
+            threshold_upper = float(hi)
+            comparison = Comparison.BETWEEN
+            unit = "in" if "inch" in text.lower() or "in" in precip_btwn.group(0).lower() else "mm"
+
     precip_match = _PRECIP_PATTERN.search(text)
-    if precip_match:
+    if precip_match and market_type != MarketType.PRECIPITATION:
         market_type = MarketType.PRECIPITATION
         threshold = float(precip_match.group(1))
         unit = "in" if "inch" in text.lower() or "in" in precip_match.group(0).lower() else "mm"
 
+    # Check temperature (between) — before above/below so "between 45 and 50F" isn't
+    # partially captured as a simple above pattern
+    if market_type != MarketType.PRECIPITATION:
+        temp_btwn = _TEMP_BETWEEN_PATTERN.search(text)
+        if temp_btwn:
+            market_type = MarketType.TEMPERATURE
+            threshold = float(temp_btwn.group(1))
+            threshold_upper = float(temp_btwn.group(3))
+            # Unit from the upper bound (always present); lower may omit it
+            unit = (temp_btwn.group(4) or temp_btwn.group(2)).upper()
+            comparison = Comparison.BETWEEN
+
     # Check temperature (below)
     temp_below_match = _TEMP_BELOW_PATTERN.search(text)
-    if temp_below_match:
+    if temp_below_match and market_type != MarketType.TEMPERATURE:
         market_type = MarketType.TEMPERATURE
         threshold = float(temp_below_match.group(1))
         unit = temp_below_match.group(2).upper()
         comparison = Comparison.BELOW
 
-    # Check temperature (above) — only if not already matched below
+    # Check temperature (above) — only if not already matched
     if market_type not in (MarketType.TEMPERATURE, MarketType.PRECIPITATION):
         temp_match = _TEMP_PATTERN.search(text)
         if temp_match:
@@ -194,14 +283,28 @@ def _regex_parse(text: str) -> MarketParams | None:
             target_date = _parse_date_str(target_date_str)
             break
 
+    # Resolve period bounds for precipitation markets
+    period_start = None
+    period_end = None
+    if market_type == MarketType.PRECIPITATION and target_date_str:
+        period = _resolve_period(target_date_str)
+        if period is not None:
+            period_start, period_end = period
+            # Use mid-point as target_date for lead-time calculation
+            if target_date is None:
+                target_date = period_start + (period_end - period_start) / 2
+
     return MarketParams(
         market_type=market_type,
         location=location,
         threshold=threshold,
+        threshold_upper=threshold_upper,
         comparison=comparison,
         unit=unit,
         target_date=target_date,
         target_date_str=target_date_str,
+        period_start=period_start,
+        period_end=period_end,
     )
 
 
@@ -212,17 +315,24 @@ Respond with ONLY a JSON object:
   "market_type": "temperature" | "precipitation" | "hurricane",
   "location": "city, state/country",
   "threshold": 100.0,
+  "threshold_upper": null,
   "comparison": "above" | "below" | "between",
   "unit": "F" | "C" | "in" | "mm",
   "target_date": "YYYY-MM-DD" or null,
-  "target_date_str": "original date text from question"
+  "target_date_str": "original date text from question",
+  "period_start": "YYYY-MM-DD" or null,
+  "period_end": "YYYY-MM-DD" or null
 }
+
+For precipitation markets that ask about a time period (e.g. "in February", "this month"),
+set period_start/period_end to the first/last day of that period.
+For BETWEEN comparisons set threshold to the lower bound and threshold_upper to the upper bound.
 
 Examples:
 - "Will the Big Apple see triple digits on Independence Day?" →
-  {"market_type": "temperature", "location": "New York, NY", "threshold": 100.0, "comparison": "above", "unit": "F", "target_date": "2025-07-04", "target_date_str": "Independence Day"}
-- "Will Phoenix break 120F this summer?" →
-  {"market_type": "temperature", "location": "Phoenix, AZ", "threshold": 120.0, "comparison": "above", "unit": "F", "target_date": null, "target_date_str": "this summer"}"""
+  {"market_type": "temperature", "location": "New York, NY", "threshold": 100.0, "threshold_upper": null, "comparison": "above", "unit": "F", "target_date": "2025-07-04", "target_date_str": "Independence Day", "period_start": null, "period_end": null}
+- "Will Seattle have between 5 and 6 inches of rain in February?" →
+  {"market_type": "precipitation", "location": "Seattle, WA", "threshold": 5.0, "threshold_upper": 6.0, "comparison": "between", "unit": "in", "target_date": null, "target_date_str": "February", "period_start": "2026-02-01", "period_end": "2026-02-28"}"""
 
 
 async def _llm_parse(question: str, description: str) -> MarketParams | None:
@@ -258,14 +368,43 @@ async def _llm_parse(question: str, description: str) -> MarketParams | None:
             except ValueError:
                 pass
 
+        # Extract period bounds
+        period_start = None
+        period_end = None
+        if data.get("period_start"):
+            try:
+                period_start = datetime.strptime(data["period_start"], "%Y-%m-%d").replace(
+                    tzinfo=timezone.utc
+                )
+            except ValueError:
+                pass
+        if data.get("period_end"):
+            try:
+                period_end = datetime.strptime(data["period_end"], "%Y-%m-%d").replace(
+                    hour=23, minute=59, second=59, tzinfo=timezone.utc
+                )
+            except ValueError:
+                pass
+
+        # If period is set but no target_date, use midpoint
+        if period_start and period_end and target_date is None:
+            target_date = period_start + (period_end - period_start) / 2
+
         return MarketParams(
             market_type=market_type,
             location=data.get("location", ""),
             threshold=float(data["threshold"]) if data.get("threshold") is not None else None,
+            threshold_upper=(
+                float(data["threshold_upper"])
+                if data.get("threshold_upper") is not None
+                else None
+            ),
             comparison=comparison,
             unit=data.get("unit", "F"),
             target_date=target_date,
             target_date_str=data.get("target_date_str", ""),
+            period_start=period_start,
+            period_end=period_end,
         )
     except json.JSONDecodeError as exc:
         logger.warning("LLM parser returned invalid JSON: %s", exc)

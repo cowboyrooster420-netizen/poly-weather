@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from weather_edge.markets.models import Comparison, MarketType
-from weather_edge.markets.parser import parse_market, _regex_parse
+from weather_edge.markets.parser import parse_market, _regex_parse, _resolve_period
 
 
 # --- Stage 1: Regex fast path tests ---
@@ -93,6 +93,62 @@ class TestRegexParse:
         params = _regex_parse("Will snowfall in Denver exceed 12 inches this month?")
         assert params is not None
         assert params.market_type == MarketType.PRECIPITATION
+
+    def test_precipitation_between(self):
+        """BETWEEN pattern extracts lower/upper thresholds."""
+        params = _regex_parse(
+            "Will Seattle have between 5 and 6 inches of rain in February?"
+        )
+        assert params is not None
+        assert params.market_type == MarketType.PRECIPITATION
+        assert params.comparison == Comparison.BETWEEN
+        assert params.threshold == 5.0
+        assert params.threshold_upper == 6.0
+        assert params.unit == "in"
+
+    def test_precipitation_period_month(self):
+        """'in February' should populate period_start/period_end."""
+        params = _regex_parse(
+            "Will rainfall in Seattle exceed 5 inches in February?"
+        )
+        assert params is not None
+        assert params.period_start is not None
+        assert params.period_end is not None
+        assert params.period_start.month == 2
+        assert params.period_start.day == 1
+        assert params.period_end.month == 2
+        assert params.period_end.day == 28 or params.period_end.day == 29
+
+    def test_temperature_between(self):
+        """BETWEEN pattern for temperature bucket markets."""
+        params = _regex_parse(
+            "Highest temperature in London between 45F and 50F on February 16?"
+        )
+        assert params is not None
+        assert params.market_type == MarketType.TEMPERATURE
+        assert params.comparison == Comparison.BETWEEN
+        assert params.threshold == 45.0
+        assert params.threshold_upper == 50.0
+        assert params.unit == "F"
+
+    def test_temperature_between_degrees(self):
+        """BETWEEN with degree symbols and dash separator."""
+        params = _regex_parse(
+            "Will the high in London be between 7°C and 10°C?"
+        )
+        assert params is not None
+        assert params.comparison == Comparison.BETWEEN
+        assert params.threshold == 7.0
+        assert params.threshold_upper == 10.0
+        assert params.unit == "C"
+
+    def test_temperature_no_period(self):
+        """Temperature markets should never get period_start/period_end."""
+        params = _regex_parse("Will the temperature in Phoenix exceed 120F in July?")
+        assert params is not None
+        assert params.market_type == MarketType.TEMPERATURE
+        assert params.period_start is None
+        assert params.period_end is None
 
 
 # --- Stage 2: LLM fallback tests ---

@@ -42,6 +42,8 @@ class MarketParams:
     unit: str = "F"  # F or C for temp; mm or in for precip
     target_date: datetime | None = None
     target_date_str: str = ""  # Original date string from market
+    period_start: datetime | None = None  # Start of accumulation period (precip)
+    period_end: datetime | None = None  # End of accumulation period (precip)
 
 
 @dataclass
