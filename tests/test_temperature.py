@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import numpy as np
 import pytest
 
-from weather_edge.forecasting.temperature import TemperatureModel
+from weather_edge.forecasting.temperature import TemperatureModel, _compute_dynamic_weights
 from weather_edge.markets.models import Comparison, MarketParams, MarketType
 from weather_edge.weather.models import EnsembleForecast
 
@@ -416,3 +416,81 @@ async def test_single_timestep_unchanged(ecmwf_forecast, gfs_forecast, now):
     assert 0 < estimate.probability < 1
     assert estimate.confidence > 0
     assert len(estimate.sources_used) >= 2
+
+
+class TestDynamicWeighting:
+    def test_reduces_outlier_drag(self):
+        """4°C gap → outlier model should be downweighted."""
+        # ECMWF mean=20, GFS mean=16 → 4°C gap > 2.5 threshold
+        models = [(20.0, 0.6), (16.0, 0.4)]
+        weights = _compute_dynamic_weights(models, disagreement_threshold=2.5)
+        # ECMWF (closer to weighted mean) should get more weight than base 0.6
+        assert weights[0] > 0.6
+        # GFS (outlier) should get less weight than base 0.4
+        assert weights[1] < 0.4
+        # Still sums to 1
+        assert abs(sum(weights) - 1.0) < 1e-9
+
+    def test_no_change_when_models_agree(self):
+        """<2.5°C gap → base weights returned unchanged."""
+        models = [(20.0, 0.6), (21.0, 0.4)]
+        weights = _compute_dynamic_weights(models, disagreement_threshold=2.5)
+        assert abs(weights[0] - 0.6) < 1e-9
+        assert abs(weights[1] - 0.4) < 1e-9
+
+    def test_min_weight_floor(self):
+        """Huge gap → outlier still gets at least min_ratio of its base weight."""
+        # 20°C gap — extreme disagreement
+        models = [(30.0, 0.6), (10.0, 0.4)]
+        weights = _compute_dynamic_weights(
+            models, disagreement_threshold=2.5, min_ratio=0.15,
+        )
+        # Outlier (GFS at 10°C) should still have meaningful weight
+        assert weights[1] >= 0.15 * 0.4 / (0.6 + 0.15 * 0.4) - 1e-9
+        # But should be much less than base
+        assert weights[1] < 0.4
+        assert abs(sum(weights) - 1.0) < 1e-9
+
+    def test_single_model_unchanged(self):
+        """Single model returns its weight unchanged."""
+        weights = _compute_dynamic_weights([(20.0, 1.0)])
+        assert weights == [1.0]
+
+    @pytest.mark.asyncio
+    async def test_dynamic_weighting_end_to_end(self, now):
+        """With large model disagreement, blend should be closer to ECMWF."""
+        times = [now + timedelta(hours=i) for i in range(48)]
+        n = len(times)
+
+        # ECMWF: mean ~20°C (near threshold)
+        ecmwf = EnsembleForecast(
+            source="ecmwf", lat=33.77, lon=-84.39,
+            times=times,
+            temperature_2m=np.random.RandomState(42).normal(20.0, 0.9, (n, 51)),
+            precipitation=np.zeros((n, 51)),
+        )
+
+        # GFS: mean ~17°C (well below threshold — the outlier)
+        gfs = EnsembleForecast(
+            source="gfs", lat=33.77, lon=-84.39,
+            times=times,
+            temperature_2m=np.random.RandomState(43).normal(17.0, 0.9, (n, 31)),
+            precipitation=np.zeros((n, 31)),
+        )
+
+        params = MarketParams(
+            market_type=MarketType.TEMPERATURE,
+            location="Atlanta, GA",
+            lat_lon=(33.77, -84.39),
+            threshold=20.0,
+            comparison=Comparison.ABOVE,
+            unit="C",
+            target_date=now + timedelta(hours=48),
+        )
+
+        model = TemperatureModel()
+        estimate = await model.estimate(params, gfs, ecmwf, noaa=None)
+
+        # With dynamic weighting, result should be higher than naive 60/40 blend
+        # because GFS (the outlier) gets downweighted
+        assert estimate.probability > 0.25

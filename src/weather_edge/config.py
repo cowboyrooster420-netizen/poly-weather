@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     # ECMWF weight for blending (GFS gets 1 - this)
     ecmwf_weight: float = 0.6
 
+    # Dynamic weighting: °C gap between model means before downweighting outlier
+    model_disagreement_threshold: float = 2.5
+    # Dynamic weighting: floor — outlier keeps at least this fraction of its base weight
+    model_min_weight_ratio: float = 0.15
+
     # HTTP request timeout seconds
     http_timeout: float = 30.0
 

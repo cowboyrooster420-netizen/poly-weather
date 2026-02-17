@@ -16,20 +16,20 @@ from weather_edge.forecasting.calibration import (
 class TestSpreadInflation:
     def test_known_breakpoints(self):
         assert abs(get_spread_inflation(0) - 1.00) < 0.001
-        assert abs(get_spread_inflation(24) - 1.08) < 0.001
-        assert abs(get_spread_inflation(168) - 1.30) < 0.001
-        assert abs(get_spread_inflation(336) - 1.50) < 0.001
+        assert abs(get_spread_inflation(24) - 1.18) < 0.001
+        assert abs(get_spread_inflation(168) - 1.50) < 0.001
+        assert abs(get_spread_inflation(336) - 1.70) < 0.001
 
     def test_interpolation(self):
-        # Midpoint between 24h (1.08) and 48h (1.12) should be ~1.10
+        # Midpoint between 24h (1.18) and 48h (1.25) should be ~1.215
         val = get_spread_inflation(36)
-        assert abs(val - 1.10) < 0.01
+        assert abs(val - 1.215) < 0.01
 
     def test_below_minimum(self):
         assert get_spread_inflation(-10) == 1.00
 
     def test_above_maximum(self):
-        assert get_spread_inflation(500) == 1.55  # Flat beyond max
+        assert get_spread_inflation(500) == 1.75  # Flat beyond max
 
     def test_monotonic_increasing(self):
         """Inflation should increase with lead time."""

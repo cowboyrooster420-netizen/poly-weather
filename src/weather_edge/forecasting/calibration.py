@@ -15,16 +15,16 @@ from numpy.typing import NDArray
 # Source: ECMWF reliability diagrams and ensemble calibration literature.
 _SPREAD_INFLATION = {
     0: 1.00,    # Analysis time
-    6: 1.02,
-    12: 1.05,
-    24: 1.08,   # Day 1
-    48: 1.12,   # Day 2
-    72: 1.15,   # Day 3
-    120: 1.22,  # Day 5
-    168: 1.30,  # Day 7
-    240: 1.40,  # Day 10
-    336: 1.50,  # Day 14
-    384: 1.55,  # Day 16 (max ECMWF range)
+    6: 1.05,
+    12: 1.10,
+    24: 1.18,   # Day 1
+    48: 1.25,   # Day 2
+    72: 1.30,   # Day 3
+    120: 1.40,  # Day 5
+    168: 1.50,  # Day 7
+    240: 1.60,  # Day 10
+    336: 1.70,  # Day 14
+    384: 1.75,  # Day 16 (max ECMWF range)
 }
 
 

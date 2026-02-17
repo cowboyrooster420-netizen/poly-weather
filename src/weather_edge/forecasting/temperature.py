@@ -107,6 +107,53 @@ def _compute_ensemble_prob(
     return float(raw_prob), float(cal_prob)
 
 
+def _compute_dynamic_weights(
+    models: list[tuple[float, float]],
+    disagreement_threshold: float = 2.5,
+    min_ratio: float = 0.15,
+    scale: float = 2.0,
+) -> list[float]:
+    """Adjust model weights based on inter-model disagreement.
+
+    Args:
+        models: list of (ensemble_mean, base_weight) per model
+        disagreement_threshold: °C gap before penalizing outliers
+        min_ratio: floor on weight penalty (outlier keeps at least this fraction)
+        scale: controls how fast penalty grows with excess disagreement
+
+    Returns:
+        Adjusted weights (sum to 1.0), same order as input.
+    """
+    if len(models) < 2:
+        return [w for _, w in models]
+
+    # Weighted multi-model mean
+    total_w = sum(w for _, w in models)
+    mm_mean = sum(m * w for m, w in models) / total_w
+
+    # Max pairwise disagreement
+    means = [m for m, _ in models]
+    max_gap = max(means) - min(means)
+
+    if max_gap <= disagreement_threshold:
+        return [w for _, w in models]
+
+    # Penalize each model proportional to its distance from the multi-model mean
+    adjusted: list[float] = []
+    for mean, base_w in models:
+        dist = abs(mean - mm_mean)
+        excess = max(0.0, dist - disagreement_threshold / 2)
+        if excess > 0:
+            penalty = max(min_ratio, 1.0 / (1.0 + excess / scale))
+            adjusted.append(base_w * penalty)
+        else:
+            adjusted.append(base_w)
+
+    # Renormalize
+    adj_total = sum(adjusted)
+    return [w / adj_total for w in adjusted]
+
+
 class TemperatureModel:
     """Temperature threshold forecast model."""
 
@@ -161,7 +208,7 @@ class TemperatureModel:
             )
         lead_time_hours = max(0, lead_time_hours)
 
-        probs: list[tuple[float, float, float]] = []  # (raw, cal, weight)
+        probs: list[tuple[float, float, float, float]] = []  # (raw, cal, weight, mean_c)
         sources: list[str] = []
         details_parts: list[str] = []
 
@@ -179,10 +226,11 @@ class TemperatureModel:
                     members, threshold_c, params.comparison, lead_time_hours,
                     threshold_upper_c,
                 )
-                probs.append((raw_p, cal_p, settings.ecmwf_weight))
+                mean_c = float(np.nanmean(members))
+                probs.append((raw_p, cal_p, settings.ecmwf_weight, mean_c))
                 sources.append(f"ECMWF ({ecmwf.n_members} members)")
                 details_parts.append(
-                    f"ECMWF: mean={np.nanmean(members):.1f}C, "
+                    f"ECMWF: mean={mean_c:.1f}C, "
                     f"std={np.nanstd(members):.1f}C, p={cal_p:.3f}"
                 )
 
@@ -201,10 +249,11 @@ class TemperatureModel:
                     threshold_upper_c,
                 )
                 gfs_weight = 1.0 - settings.ecmwf_weight
-                probs.append((raw_p, cal_p, gfs_weight))
+                mean_c = float(np.nanmean(members))
+                probs.append((raw_p, cal_p, gfs_weight, mean_c))
                 sources.append(f"GFS ({gfs.n_members} members)")
                 details_parts.append(
-                    f"GFS: mean={np.nanmean(members):.1f}C, "
+                    f"GFS: mean={mean_c:.1f}C, "
                     f"std={np.nanstd(members):.1f}C, p={cal_p:.3f}"
                 )
 
@@ -228,10 +277,28 @@ class TemperatureModel:
                 details="No ensemble data available",
             )
 
+        # Dynamic weighting: adjust base weights when models disagree
+        base_models = [(mean_c, w) for _, _, w, mean_c in probs]
+        adjusted_weights = _compute_dynamic_weights(
+            base_models,
+            disagreement_threshold=settings.model_disagreement_threshold,
+            min_ratio=settings.model_min_weight_ratio,
+        )
+
+        # Log when weights are adjusted
+        base_weights = [w for _, _, w, _ in probs]
+        if adjusted_weights != base_weights:
+            model_names = [s.split(" (")[0] for s in sources[:len(probs)]]
+            pairs = ", ".join(
+                f"{name}: {bw:.2f}->{aw:.2f}"
+                for name, bw, aw in zip(model_names, base_weights, adjusted_weights)
+            )
+            logger.info("Dynamic weighting adjusted: %s", pairs)
+
         # Weighted blend of calibrated probabilities
-        total_weight = sum(w for _, _, w in probs)
-        blended_cal = sum(cal * w for _, cal, w in probs) / total_weight
-        blended_raw = sum(raw * w for raw, _, w in probs) / total_weight
+        total_weight = sum(adjusted_weights)
+        blended_cal = sum(cal * w for (_, cal, _, _), w in zip(probs, adjusted_weights)) / total_weight
+        blended_raw = sum(raw * w for (raw, _, _, _), w in zip(probs, adjusted_weights)) / total_weight
 
         confidence = confidence_from_lead_time(lead_time_hours)
         # Reduce confidence if only one source
