@@ -18,7 +18,7 @@ from weather_edge.forecasting.calibration import (
     confidence_from_lead_time,
     inflate_ensemble_spread,
 )
-from weather_edge.forecasting.utils import find_closest_time_idx
+from weather_edge.forecasting.utils import find_closest_time_idx, find_period_time_indices
 from weather_edge.markets.models import Comparison, MarketParams
 from weather_edge.weather.models import EnsembleForecast, NOAAForecast
 
@@ -31,6 +31,30 @@ def _celsius_to_fahrenheit(c: float) -> float:
 
 def _fahrenheit_to_celsius(f: float) -> float:
     return (f - 32.0) * 5.0 / 9.0
+
+
+def _get_daily_members(
+    forecast: EnsembleForecast,
+    target_date: datetime,
+    aggregation: str,
+) -> np.ndarray | None:
+    """Get daily max/min temperature per ensemble member.
+
+    Finds all hours on target_date, takes max or min across hours
+    per member. Returns shape (n_members,) or None if no hours found.
+    """
+    day_start = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = target_date.replace(hour=23, minute=59, second=59, microsecond=0)
+    indices = find_period_time_indices(forecast.times, day_start, day_end)
+    if not indices:
+        return None
+    # shape (n_hours, n_members)
+    temps = forecast.temperature_2m[indices, :]
+    if aggregation == "max":
+        return np.max(temps, axis=0)
+    elif aggregation == "min":
+        return np.min(temps, axis=0)
+    return None
 
 
 def _compute_ensemble_prob(
@@ -143,9 +167,14 @@ class TemperatureModel:
 
         # ECMWF ensemble
         if ecmwf is not None and ecmwf.n_members > 0:
-            idx = find_closest_time_idx(ecmwf.times, target_time)
-            if idx is not None:
-                members = ecmwf.temperature_2m[idx, :]
+            members = None
+            if params.daily_aggregation is not None:
+                members = _get_daily_members(ecmwf, target_time, params.daily_aggregation)
+            else:
+                idx = find_closest_time_idx(ecmwf.times, target_time)
+                if idx is not None:
+                    members = ecmwf.temperature_2m[idx, :]
+            if members is not None:
                 raw_p, cal_p = _compute_ensemble_prob(
                     members, threshold_c, params.comparison, lead_time_hours,
                     threshold_upper_c,
@@ -159,9 +188,14 @@ class TemperatureModel:
 
         # GFS ensemble
         if gfs is not None and gfs.n_members > 0:
-            idx = find_closest_time_idx(gfs.times, target_time)
-            if idx is not None:
-                members = gfs.temperature_2m[idx, :]
+            members = None
+            if params.daily_aggregation is not None:
+                members = _get_daily_members(gfs, target_time, params.daily_aggregation)
+            else:
+                idx = find_closest_time_idx(gfs.times, target_time)
+                if idx is not None:
+                    members = gfs.temperature_2m[idx, :]
+            if members is not None:
                 raw_p, cal_p = _compute_ensemble_prob(
                     members, threshold_c, params.comparison, lead_time_hours,
                     threshold_upper_c,

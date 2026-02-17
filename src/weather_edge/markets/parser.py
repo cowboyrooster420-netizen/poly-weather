@@ -410,6 +410,14 @@ def _regex_parse(text: str) -> MarketParams | None:
             if target_date is None:
                 target_date = period_start + (period_end - period_start) / 2
 
+    # Detect daily aggregation for temperature markets
+    daily_aggregation = None
+    if market_type == MarketType.TEMPERATURE:
+        if re.search(r"\bhighest\s+temperature\b", text, re.IGNORECASE):
+            daily_aggregation = "max"
+        elif re.search(r"\blowest\s+temperature\b", text, re.IGNORECASE):
+            daily_aggregation = "min"
+
     return MarketParams(
         market_type=market_type,
         location=location,
@@ -421,6 +429,7 @@ def _regex_parse(text: str) -> MarketParams | None:
         target_date_str=target_date_str,
         period_start=period_start,
         period_end=period_end,
+        daily_aggregation=daily_aggregation,
     )
 
 
@@ -437,18 +446,24 @@ Respond with ONLY a JSON object:
   "target_date": "YYYY-MM-DD" or null,
   "target_date_str": "original date text from question",
   "period_start": "YYYY-MM-DD" or null,
-  "period_end": "YYYY-MM-DD" or null
+  "period_end": "YYYY-MM-DD" or null,
+  "daily_aggregation": "max" | "min" | null
 }
 
 For precipitation markets that ask about a time period (e.g. "in February", "this month"),
 set period_start/period_end to the first/last day of that period.
 For BETWEEN comparisons set threshold to the lower bound and threshold_upper to the upper bound.
+For temperature markets asking about "highest temperature", set daily_aggregation to "max".
+For temperature markets asking about "lowest temperature", set daily_aggregation to "min".
+Otherwise set daily_aggregation to null.
 
 Examples:
 - "Will the Big Apple see triple digits on Independence Day?" →
-  {"market_type": "temperature", "location": "New York, NY", "threshold": 100.0, "threshold_upper": null, "comparison": "above", "unit": "F", "target_date": "2025-07-04", "target_date_str": "Independence Day", "period_start": null, "period_end": null}
+  {"market_type": "temperature", "location": "New York, NY", "threshold": 100.0, "threshold_upper": null, "comparison": "above", "unit": "F", "target_date": "2025-07-04", "target_date_str": "Independence Day", "period_start": null, "period_end": null, "daily_aggregation": null}
 - "Will Seattle have between 5 and 6 inches of rain in February?" →
-  {"market_type": "precipitation", "location": "Seattle, WA", "threshold": 5.0, "threshold_upper": 6.0, "comparison": "between", "unit": "in", "target_date": null, "target_date_str": "February", "period_start": "2026-02-01", "period_end": "2026-02-28"}"""
+  {"market_type": "precipitation", "location": "Seattle, WA", "threshold": 5.0, "threshold_upper": 6.0, "comparison": "between", "unit": "in", "target_date": null, "target_date_str": "February", "period_start": "2026-02-01", "period_end": "2026-02-28", "daily_aggregation": null}
+- "Will the highest temperature in Atlanta be 68°F or higher on February 18?" →
+  {"market_type": "temperature", "location": "Atlanta, GA", "threshold": 68.0, "threshold_upper": null, "comparison": "above", "unit": "F", "target_date": "2026-02-18", "target_date_str": "February 18", "period_start": null, "period_end": null, "daily_aggregation": "max"}"""
 
 
 async def _llm_parse(question: str, description: str) -> MarketParams | None:
@@ -506,6 +521,11 @@ async def _llm_parse(question: str, description: str) -> MarketParams | None:
         if period_start and period_end and target_date is None:
             target_date = period_start + (period_end - period_start) / 2
 
+        # Extract daily_aggregation
+        daily_aggregation = data.get("daily_aggregation")
+        if daily_aggregation not in ("max", "min"):
+            daily_aggregation = None
+
         return MarketParams(
             market_type=market_type,
             location=data.get("location") or "",
@@ -521,6 +541,7 @@ async def _llm_parse(question: str, description: str) -> MarketParams | None:
             target_date_str=data.get("target_date_str", ""),
             period_start=period_start,
             period_end=period_end,
+            daily_aggregation=daily_aggregation,
         )
     except json.JSONDecodeError as exc:
         logger.warning("LLM parser returned invalid JSON: %s", exc)

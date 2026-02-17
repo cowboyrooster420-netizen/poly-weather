@@ -284,3 +284,135 @@ async def test_temperature_between_narrow_band(now):
     estimate = await model.estimate(params, gfs=None, ecmwf=ecmwf, noaa=None)
 
     assert estimate.probability < 0.01
+
+
+@pytest.mark.asyncio
+async def test_daily_max_aggregation(now):
+    """daily_aggregation='max' should give higher temps than a single hour."""
+    np.random.seed(42)
+    # 24 hours of data on the target day; temperature rises then falls
+    times = [now + timedelta(hours=i) for i in range(24)]
+    n = len(times)
+    n_members = 31
+
+    # Each hour has mean = 20 + 5*sin(hour * pi/12) so peak ~25C at hour 6
+    base = np.array([20 + 5 * np.sin(i * np.pi / 12) for i in range(n)])
+    temp_2m = np.random.normal(base[:, None], 1.5, (n, n_members))
+
+    ecmwf = EnsembleForecast(
+        source="ecmwf", lat=33.45, lon=-112.07,
+        times=times,
+        temperature_2m=temp_2m,
+        precipitation=np.zeros((n, n_members)),
+    )
+
+    # Threshold that's above the mean of most hours but below the daily max
+    threshold_c = 24.0  # ~75.2F
+
+    # Single-hour estimate (use hour 0, mean ~20C → high threshold is unlikely)
+    params_single = MarketParams(
+        market_type=MarketType.TEMPERATURE,
+        location="Phoenix, AZ",
+        lat_lon=(33.45, -112.07),
+        threshold=threshold_c,
+        comparison=Comparison.ABOVE,
+        unit="C",
+        target_date=times[0],
+        daily_aggregation=None,
+    )
+
+    # Daily max estimate (takes max across all 24 hours per member → ~25C)
+    params_daily = MarketParams(
+        market_type=MarketType.TEMPERATURE,
+        location="Phoenix, AZ",
+        lat_lon=(33.45, -112.07),
+        threshold=threshold_c,
+        comparison=Comparison.ABOVE,
+        unit="C",
+        target_date=times[0],
+        daily_aggregation="max",
+    )
+
+    model = TemperatureModel()
+    est_single = await model.estimate(params_single, gfs=None, ecmwf=ecmwf, noaa=None)
+    est_daily = await model.estimate(params_daily, gfs=None, ecmwf=ecmwf, noaa=None)
+
+    # Daily max should give a higher probability than the single hour
+    assert est_daily.probability > est_single.probability
+
+
+@pytest.mark.asyncio
+async def test_daily_min_aggregation(now):
+    """daily_aggregation='min' should give lower temps than a single hour."""
+    np.random.seed(42)
+    times = [now + timedelta(hours=i) for i in range(24)]
+    n = len(times)
+    n_members = 31
+
+    # Temperature varies: mean = 10 + 5*sin(hour * pi/12), trough ~5C
+    base = np.array([10 + 5 * np.sin(i * np.pi / 12) for i in range(n)])
+    temp_2m = np.random.normal(base[:, None], 1.5, (n, n_members))
+
+    ecmwf = EnsembleForecast(
+        source="ecmwf", lat=51.5, lon=-0.12,
+        times=times,
+        temperature_2m=temp_2m,
+        precipitation=np.zeros((n, n_members)),
+    )
+
+    # Threshold at 7C — below mid-day but above minimum
+    threshold_c = 7.0
+
+    # Single hour at hour 6 where mean ~15C → prob of BELOW 7C is low
+    params_single = MarketParams(
+        market_type=MarketType.TEMPERATURE,
+        location="London, UK",
+        lat_lon=(51.5, -0.12),
+        threshold=threshold_c,
+        comparison=Comparison.BELOW,
+        unit="C",
+        target_date=times[6],
+        daily_aggregation=None,
+    )
+
+    # Daily min → picks minimum across all hours per member, closer to 5C
+    params_daily = MarketParams(
+        market_type=MarketType.TEMPERATURE,
+        location="London, UK",
+        lat_lon=(51.5, -0.12),
+        threshold=threshold_c,
+        comparison=Comparison.BELOW,
+        unit="C",
+        target_date=times[6],
+        daily_aggregation="min",
+    )
+
+    model = TemperatureModel()
+    est_single = await model.estimate(params_single, gfs=None, ecmwf=ecmwf, noaa=None)
+    est_daily = await model.estimate(params_daily, gfs=None, ecmwf=ecmwf, noaa=None)
+
+    # Daily min should give a higher probability of being BELOW the threshold
+    assert est_daily.probability > est_single.probability
+
+
+@pytest.mark.asyncio
+async def test_single_timestep_unchanged(ecmwf_forecast, gfs_forecast, now):
+    """None aggregation preserves existing single-timestep behavior."""
+    params = MarketParams(
+        market_type=MarketType.TEMPERATURE,
+        location="Phoenix, AZ",
+        lat_lon=(33.45, -112.07),
+        threshold=100.0,
+        comparison=Comparison.ABOVE,
+        unit="F",
+        target_date=now + timedelta(hours=24),
+        daily_aggregation=None,
+    )
+
+    model = TemperatureModel()
+    estimate = await model.estimate(params, gfs_forecast, ecmwf_forecast, noaa=None)
+
+    # Should behave exactly like the original — produces a valid result
+    assert 0 < estimate.probability < 1
+    assert estimate.confidence > 0
+    assert len(estimate.sources_used) >= 2

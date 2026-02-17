@@ -44,6 +44,7 @@ class MarketParams:
     target_date_str: str = ""  # Original date string from market
     period_start: datetime | None = None  # Start of accumulation period (precip)
     period_end: datetime | None = None  # End of accumulation period (precip)
+    daily_aggregation: str | None = None  # "max", "min", or None
 
 
 @dataclass

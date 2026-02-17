@@ -303,6 +303,35 @@ class TestRegexParse:
         assert params.target_date.month == 2
         assert params.target_date.day == 16
 
+    # --- Daily aggregation detection tests ---
+
+    def test_highest_temperature_daily_max(self):
+        """'highest temperature' → daily_aggregation='max'."""
+        params = _regex_parse(
+            "Will the highest temperature in Atlanta be 68°F or higher on February 18?"
+        )
+        assert params is not None
+        assert params.market_type == MarketType.TEMPERATURE
+        assert params.daily_aggregation == "max"
+
+    def test_lowest_temperature_daily_min(self):
+        """'lowest temperature' → daily_aggregation='min'."""
+        params = _regex_parse(
+            "Will the lowest temperature in Chicago be 20°F or below on January 15?"
+        )
+        assert params is not None
+        assert params.market_type == MarketType.TEMPERATURE
+        assert params.daily_aggregation == "min"
+
+    def test_plain_temperature_no_aggregation(self):
+        """'temperature' without highest/lowest → daily_aggregation=None."""
+        params = _regex_parse(
+            "Will the temperature in Phoenix exceed 120F on July 4, 2025?"
+        )
+        assert params is not None
+        assert params.market_type == MarketType.TEMPERATURE
+        assert params.daily_aggregation is None
+
 
 # --- Stage 2: LLM fallback tests ---
 
