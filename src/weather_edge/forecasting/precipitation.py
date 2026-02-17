@@ -156,25 +156,37 @@ class PrecipitationModel:
             if params.unit.lower() in ("in", "inches"):
                 threshold_upper_mm = _inches_to_mm(params.threshold_upper)
 
-        target_time = params.target_date
         now = datetime.now(timezone.utc)
-        lead_time_hours = (target_time - now).total_seconds() / 3600
 
-        if lead_time_hours < -6:
-            return ProbabilityEstimate(
-                probability=0.5, raw_probability=0.5, confidence=0.0,
-                lead_time_hours=0, details="Target date is in the past",
-            )
-        if lead_time_hours > 384:
-            return ProbabilityEstimate(
-                probability=0.5, raw_probability=0.5, confidence=0.0,
-                lead_time_hours=lead_time_hours,
-                details="Target date beyond ensemble forecast range",
-            )
-        lead_time_hours = max(0, lead_time_hours)
+        # For period markets, use period_end to decide if the window has closed,
+        # and the midpoint of [now, period_end] as representative lead time for
+        # spread inflation (avoids over-inflating with the worst-case lead time).
+        has_period = params.period_start is not None and params.period_end is not None
+        if has_period:
+            end_hours = (params.period_end - now).total_seconds() / 3600
+            if end_hours < -6:
+                return ProbabilityEstimate(
+                    probability=0.5, raw_probability=0.5, confidence=0.0,
+                    lead_time_hours=0, details="Period has ended",
+                )
+            lead_time_hours = max(0, end_hours / 2.0)
+        else:
+            lead_time_hours = (params.target_date - now).total_seconds() / 3600
+            if lead_time_hours < -6:
+                return ProbabilityEstimate(
+                    probability=0.5, raw_probability=0.5, confidence=0.0,
+                    lead_time_hours=0, details="Target date is in the past",
+                )
+            if lead_time_hours > 384:
+                return ProbabilityEstimate(
+                    probability=0.5, raw_probability=0.5, confidence=0.0,
+                    lead_time_hours=lead_time_hours,
+                    details="Target date beyond ensemble forecast range",
+                )
+            lead_time_hours = max(0, lead_time_hours)
 
         # Route to period or single-timestep path
-        if params.period_start is not None and params.period_end is not None:
+        if has_period:
             return await self._estimate_period(
                 params, gfs, ecmwf, noaa,
                 threshold_mm, threshold_upper_mm, lead_time_hours,
