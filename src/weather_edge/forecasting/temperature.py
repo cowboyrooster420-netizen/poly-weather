@@ -192,7 +192,21 @@ class TemperatureModel:
 
         target_time = params.target_date
         now = datetime.now(timezone.utc)
-        lead_time_hours = (target_time - now).total_seconds() / 3600
+
+        # For daily aggregation markets, compute lead time to local noon
+        # instead of midnight UTC.  Approximate local noon from longitude:
+        # noon_utc_hour = 12 - (longitude / 15)
+        if params.daily_aggregation is not None and params.lat_lon is not None:
+            _, lon = params.lat_lon
+            noon_utc_hour = 12.0 - lon / 15.0  # e.g. Atlanta -84.4 → ~17.6 UTC
+            local_noon = target_time.replace(
+                hour=int(noon_utc_hour) % 24,
+                minute=int((noon_utc_hour % 1) * 60),
+                second=0, microsecond=0,
+            )
+            lead_time_hours = (local_noon - now).total_seconds() / 3600
+        else:
+            lead_time_hours = (target_time - now).total_seconds() / 3600
 
         # Reject past dates and targets beyond ensemble range (~16 days)
         if lead_time_hours < -6:

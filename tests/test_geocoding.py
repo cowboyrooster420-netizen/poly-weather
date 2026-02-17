@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from weather_edge.weather.geocoding import geocode, _cache
+from weather_edge.weather.geocoding import geocode, _cache, _STATION_COORDS
 
 
 @pytest.fixture(autouse=True)
@@ -64,10 +64,10 @@ async def test_geocode_caching():
     mock_geolocator.__aexit__ = AsyncMock(return_value=False)
 
     with patch("weather_edge.weather.geocoding.Nominatim", return_value=mock_geolocator):
-        result1 = await geocode("New York City")
-        result2 = await geocode("New York City")
+        result1 = await geocode("Phoenix, AZ")
+        result2 = await geocode("Phoenix, AZ")
         # Also test normalization
-        result3 = await geocode("  New York City  ")
+        result3 = await geocode("  Phoenix, AZ  ")
 
     assert result1 == result2 == result3
     # Nominatim should only be called once (cached after first call)
@@ -91,3 +91,25 @@ async def test_geocode_exception_handling():
     # Should be cached as None
     assert "phoenix, az" in _cache
     assert _cache["phoenix, az"] is None
+
+
+@pytest.mark.asyncio
+async def test_station_lookup_bypasses_nominatim():
+    """Known Polymarket cities resolve from station table without API call."""
+    mock_geolocator = AsyncMock()
+    mock_geolocator.geocode = AsyncMock()
+    mock_geolocator.__aenter__ = AsyncMock(return_value=mock_geolocator)
+    mock_geolocator.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("weather_edge.weather.geocoding.Nominatim", return_value=mock_geolocator):
+        result = await geocode("Atlanta")
+
+    assert result == _STATION_COORDS["atlanta"]
+    assert mock_geolocator.geocode.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_station_lookup_case_insensitive():
+    """Station lookup normalizes case and whitespace."""
+    result = await geocode("  Atlanta, GA  ")
+    assert result == _STATION_COORDS["atlanta, ga"]
