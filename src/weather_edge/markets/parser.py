@@ -163,7 +163,9 @@ def _parse_date_str(date_str: str) -> datetime | None:
             if dt.year == 1900:  # No year provided
                 now = datetime.now(timezone.utc)
                 dt = dt.replace(year=now.year, tzinfo=timezone.utc)
-                if dt < now:
+                # Use a 36h buffer: a date is "today" until well past
+                # end-of-day in all timezones (UTC-12 to UTC+14)
+                if dt < now - timedelta(hours=36):
                     dt = dt.replace(year=now.year + 1)
             return dt.replace(tzinfo=timezone.utc)
         except ValueError:

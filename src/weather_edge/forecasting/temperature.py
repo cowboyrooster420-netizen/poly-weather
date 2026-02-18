@@ -7,7 +7,7 @@ then computes CDF at the threshold to get exceedance probability.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 from scipy import stats
@@ -37,14 +37,20 @@ def _get_daily_members(
     forecast: EnsembleForecast,
     target_date: datetime,
     aggregation: str,
+    longitude: float | None = None,
 ) -> np.ndarray | None:
     """Get daily max/min temperature per ensemble member.
 
-    Finds all hours on target_date, takes max or min across hours
-    per member. Returns shape (n_members,) or None if no hours found.
+    Finds all hours on target_date in *local* time (approximated from
+    longitude), takes max or min across hours per member.
+    Returns shape (n_members,) or None if no hours found.
     """
-    day_start = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
-    day_end = target_date.replace(hour=23, minute=59, second=59, microsecond=0)
+    # Shift day boundaries to local midnight using longitude
+    utc_offset_hours = -(longitude / 15.0) if longitude is not None else 0.0
+    offset = timedelta(hours=utc_offset_hours)
+    local_midnight = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_start = local_midnight + offset
+    day_end = day_start + timedelta(hours=24) - timedelta(seconds=1)
     indices = find_period_time_indices(forecast.times, day_start, day_end)
     if not indices:
         return None
@@ -230,7 +236,7 @@ class TemperatureModel:
         if ecmwf is not None and ecmwf.n_members > 0:
             members = None
             if params.daily_aggregation is not None:
-                members = _get_daily_members(ecmwf, target_time, params.daily_aggregation)
+                members = _get_daily_members(ecmwf, target_time, params.daily_aggregation, longitude=params.lat_lon[1] if params.lat_lon else None)
             else:
                 idx = find_closest_time_idx(ecmwf.times, target_time)
                 if idx is not None:
@@ -252,7 +258,7 @@ class TemperatureModel:
         if gfs is not None and gfs.n_members > 0:
             members = None
             if params.daily_aggregation is not None:
-                members = _get_daily_members(gfs, target_time, params.daily_aggregation)
+                members = _get_daily_members(gfs, target_time, params.daily_aggregation, longitude=params.lat_lon[1] if params.lat_lon else None)
             else:
                 idx = find_closest_time_idx(gfs.times, target_time)
                 if idx is not None:
