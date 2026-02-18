@@ -111,6 +111,20 @@ class SignalTracker:
             await db.commit()
             return cursor.rowcount
 
+    async def get_unresolved_market_ids(self) -> list[tuple[str, str]]:
+        """Get distinct market IDs that have no outcome yet.
+
+        Returns:
+            List of (market_id, question) tuples.
+        """
+        await self._ensure_db()
+        async with aiosqlite.connect(str(self._db_path)) as db:
+            cursor = await db.execute(
+                "SELECT DISTINCT market_id, question FROM signals WHERE outcome IS NULL"
+            )
+            rows = await cursor.fetchall()
+            return [(row[0], row[1]) for row in rows]
+
     async def get_calibration_data(self) -> list[tuple[float, int]]:
         """Get (model_prob, outcome) pairs for Platt scaling calibration.
 
@@ -153,10 +167,18 @@ class SignalTracker:
             )
             avg_edge = (await cursor.fetchone())["avg_edge"]
 
+            # Brier score: AVG((model_prob - outcome)^2) over resolved signals
+            cursor = await db.execute(
+                """SELECT AVG((model_prob - outcome) * (model_prob - outcome))
+                   as brier FROM signals WHERE outcome IS NOT NULL"""
+            )
+            brier = (await cursor.fetchone())["brier"]
+
             return {
                 "total_signals": total,
                 "resolved": resolved,
                 "wins": wins,
                 "win_rate": wins / resolved if resolved > 0 else None,
                 "avg_abs_edge": avg_edge,
+                "brier_score": brier,
             }

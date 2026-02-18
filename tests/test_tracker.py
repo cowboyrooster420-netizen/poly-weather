@@ -193,3 +193,73 @@ async def test_db_parent_dirs_created(tmp_db):
     await tracker.log_signal(signal)
 
     assert deep_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_get_unresolved_market_ids(tracker):
+    """Test getting unresolved market IDs."""
+    # Log signals for 3 different markets
+    await tracker.log_signal(_make_signal("m1"))
+    await tracker.log_signal(_make_signal("m2"))
+    await tracker.log_signal(_make_signal("m3"))
+
+    # Resolve one
+    await tracker.backfill_outcome("m2", outcome=1)
+
+    unresolved = await tracker.get_unresolved_market_ids()
+    market_ids = [mid for mid, _ in unresolved]
+
+    assert len(unresolved) == 2
+    assert "m1" in market_ids
+    assert "m3" in market_ids
+    assert "m2" not in market_ids
+
+
+@pytest.mark.asyncio
+async def test_get_unresolved_market_ids_empty(tracker):
+    """Test that no unresolved IDs are returned when all resolved."""
+    await tracker.log_signal(_make_signal("m1"))
+    await tracker.backfill_outcome("m1", outcome=0)
+
+    unresolved = await tracker.get_unresolved_market_ids()
+    assert len(unresolved) == 0
+
+
+@pytest.mark.asyncio
+async def test_get_unresolved_market_ids_distinct(tracker):
+    """Test that duplicate market IDs are deduplicated."""
+    # Log two signals for the same market
+    await tracker.log_signal(_make_signal("m1"))
+    await tracker.log_signal(_make_signal("m1"))
+
+    unresolved = await tracker.get_unresolved_market_ids()
+    assert len(unresolved) == 1
+
+
+@pytest.mark.asyncio
+async def test_brier_score_in_summary(tracker):
+    """Test that Brier score is computed correctly."""
+    # Log signals with known model_prob
+    s1 = _make_signal("m1", model_prob=0.9, market_prob=0.5, edge=0.4)
+    s2 = _make_signal("m2", model_prob=0.2, market_prob=0.5, edge=-0.3)
+    await tracker.log_signal(s1)
+    await tracker.log_signal(s2)
+
+    # m1: model_prob=0.9, outcome=1 → (0.9-1)^2 = 0.01
+    # m2: model_prob=0.2, outcome=0 → (0.2-0)^2 = 0.04
+    # Brier = (0.01 + 0.04) / 2 = 0.025
+    await tracker.backfill_outcome("m1", outcome=1)
+    await tracker.backfill_outcome("m2", outcome=0)
+
+    summary = await tracker.get_performance_summary()
+    assert summary["brier_score"] is not None
+    assert abs(summary["brier_score"] - 0.025) < 0.001
+
+
+@pytest.mark.asyncio
+async def test_brier_score_none_when_no_resolved(tracker):
+    """Test that Brier score is None when no outcomes are resolved."""
+    await tracker.log_signal(_make_signal("m1"))
+
+    summary = await tracker.get_performance_summary()
+    assert summary["brier_score"] is None

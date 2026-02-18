@@ -242,10 +242,22 @@ async def generate_signals(
 
 
 async def run_pipeline() -> list[Signal]:
-    """Run the full pipeline: scan → fetch → forecast → signal → log.
+    """Run the full pipeline: resolve → scan → fetch → forecast → signal → log.
 
     Returns list of generated signals.
     """
+    # Step 0: Auto-resolve pending market outcomes
+    from weather_edge.signals.resolver import resolve_pending_signals
+
+    try:
+        resolved = await resolve_pending_signals()
+        if resolved:
+            console.print(
+                f"[dim]Auto-resolved {len(resolved)} market(s)[/dim]"
+            )
+    except Exception:
+        logger.warning("Auto-resolve failed, continuing with scan", exc_info=True)
+
     # Step 1: Scan markets
     markets = await scan_markets()
     if not markets:

@@ -54,6 +54,21 @@ async def fetch_all_active_markets() -> list[dict]:
     return all_markets
 
 
+async def fetch_market_by_id(market_id: str) -> dict | None:
+    """Fetch a single market by ID from the Gamma API.
+
+    Returns the raw market dict, or None on error.
+    """
+    settings = get_settings()
+    try:
+        async with HttpClient(base_url=settings.gamma_api_url) as client:
+            resp = await client.get(f"/markets/{market_id}")
+            return resp.json()
+    except Exception:
+        logger.warning("Failed to fetch market %s", market_id, exc_info=True)
+        return None
+
+
 def raw_to_weather_market(raw: dict) -> WeatherMarket:
     """Convert a raw Gamma API market dict to a WeatherMarket.
 

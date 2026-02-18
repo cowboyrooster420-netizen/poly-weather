@@ -192,6 +192,7 @@ class TestStatsCommand:
             "wins": 35,
             "win_rate": 0.70,
             "avg_abs_edge": 0.12,
+            "brier_score": 0.182,
         }
 
         with patch("weather_edge.signals.tracker.SignalTracker.get_performance_summary", new_callable=AsyncMock) as mock_perf:
@@ -203,6 +204,7 @@ class TestStatsCommand:
         assert result.exit_code == 0
         assert "100" in result.output
         assert "70.0%" in result.output
+        assert "0.182" in result.output
 
     def test_stats_empty(self):
         """Test stats command with no data."""
@@ -212,6 +214,7 @@ class TestStatsCommand:
             "wins": 0,
             "win_rate": None,
             "avg_abs_edge": None,
+            "brier_score": None,
         }
 
         with patch("weather_edge.signals.tracker.SignalTracker.get_performance_summary", new_callable=AsyncMock) as mock_perf:
@@ -221,3 +224,52 @@ class TestStatsCommand:
 
         assert result.exit_code == 0
         assert "N/A" in result.output
+
+
+class TestResolveCommand:
+    def test_resolve_with_results(self):
+        """Test resolve command when markets are resolved."""
+        resolved = [
+            {"market_id": "m1", "question": "Atlanta 57F?", "outcome": 0, "direction": "NO", "correct": True},
+            {"market_id": "m2", "question": "Dallas 40F?", "outcome": 1, "direction": "YES", "correct": True},
+        ]
+        summary = {
+            "total_signals": 5,
+            "resolved": 3,
+            "wins": 2,
+            "win_rate": 0.667,
+            "avg_abs_edge": 0.10,
+            "brier_score": 0.150,
+        }
+
+        with patch("weather_edge.signals.resolver.resolve_pending_signals", new_callable=AsyncMock) as mock_resolve, \
+             patch("weather_edge.signals.tracker.SignalTracker.get_performance_summary", new_callable=AsyncMock) as mock_perf, \
+             patch("weather_edge.signals.tracker.SignalTracker._ensure_db", new_callable=AsyncMock):
+            mock_resolve.return_value = resolved
+            mock_perf.return_value = summary
+            result = runner.invoke(app, ["resolve"])
+
+        assert result.exit_code == 0
+        assert "Atlanta" in result.output
+        assert "Dallas" in result.output
+
+    def test_resolve_no_pending(self):
+        """Test resolve command when nothing to resolve."""
+        summary = {
+            "total_signals": 5,
+            "resolved": 5,
+            "wins": 3,
+            "win_rate": 0.60,
+            "avg_abs_edge": 0.10,
+            "brier_score": 0.200,
+        }
+
+        with patch("weather_edge.signals.resolver.resolve_pending_signals", new_callable=AsyncMock) as mock_resolve, \
+             patch("weather_edge.signals.tracker.SignalTracker.get_performance_summary", new_callable=AsyncMock) as mock_perf, \
+             patch("weather_edge.signals.tracker.SignalTracker._ensure_db", new_callable=AsyncMock):
+            mock_resolve.return_value = []
+            mock_perf.return_value = summary
+            result = runner.invoke(app, ["resolve"])
+
+        assert result.exit_code == 0
+        assert "No markets newly resolved" in result.output

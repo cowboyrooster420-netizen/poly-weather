@@ -206,6 +206,53 @@ def inspect(
 
 
 @app.command()
+def resolve() -> None:
+    """Resolve pending market outcomes from Polymarket."""
+
+    async def _run() -> None:
+        from weather_edge.signals.resolver import resolve_pending_signals
+        from weather_edge.signals.tracker import SignalTracker
+
+        resolved = await resolve_pending_signals()
+
+        if not resolved:
+            console.print("[dim]No markets newly resolved.[/dim]")
+        else:
+            table = Table(title="Resolved Markets", show_lines=True)
+            table.add_column("Question", width=50, no_wrap=False)
+            table.add_column("Outcome", width=8)
+            table.add_column("Our Call", width=8)
+            table.add_column("Correct", width=8)
+
+            for r in resolved:
+                outcome_str = "YES" if r["outcome"] == 1 else "NO"
+                direction = r["direction"] or "?"
+                mark = "\u2713" if r["correct"] else "\u2717"
+                table.add_row(
+                    r["question"] or r["market_id"],
+                    outcome_str,
+                    direction,
+                    mark,
+                )
+            console.print(table)
+
+        # Show updated stats
+        tracker = SignalTracker()
+        summary = await tracker.get_performance_summary()
+        console.print("\n[bold]Updated Stats[/bold]")
+        if summary["win_rate"] is not None:
+            console.print(f"  Win rate:    {summary['win_rate']:.1%}")
+        else:
+            console.print("  Win rate:    N/A")
+        if summary.get("brier_score") is not None:
+            console.print(f"  Brier score: {summary['brier_score']:.3f}")
+        else:
+            console.print("  Brier score: N/A")
+
+    asyncio.run(_run())
+
+
+@app.command()
 def stats() -> None:
     """Show historical signal performance statistics."""
 
@@ -224,6 +271,10 @@ def stats() -> None:
             console.print("  Win rate:             N/A (no resolved outcomes)")
         if summary['avg_abs_edge'] is not None:
             console.print(f"  Avg |edge|:           {summary['avg_abs_edge']:.1%}")
+        if summary.get('brier_score') is not None:
+            console.print(f"  Brier score:          {summary['brier_score']:.3f}")
+        else:
+            console.print("  Brier score:          N/A (no resolved outcomes)")
 
     asyncio.run(_run())
 
