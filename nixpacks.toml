@@ -2,4 +2,4 @@
 cmds = ["pip install --no-cache-dir ."]
 
 [start]
-cmd = "rm -f /data/signals.db && python -m weather_edge.cli scan --notify"
+cmd = "python -m weather_edge.cli scan --notify"
