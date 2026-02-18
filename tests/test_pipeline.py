@@ -248,7 +248,7 @@ async def test_generate_signals_filters_by_edge(now):
     )
     # 20% edge — above threshold
     est2 = ProbabilityEstimate(
-        probability=0.50, raw_probability=0.50,
+        probability=0.51, raw_probability=0.51,
         confidence=0.8, lead_time_hours=24,
     )
 

@@ -73,6 +73,10 @@ def generate_signal(
     market_prob = market.market_prob
     edge = model_prob - market_prob
 
+    # Skip fallback 50% predictions — the model had no real estimate
+    if abs(model_prob - 0.5) < 1e-4:
+        return None
+
     if abs(edge) < settings.min_edge:
         return None
 
