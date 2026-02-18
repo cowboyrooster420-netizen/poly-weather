@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     # Minimum model confidence to generate a signal
     min_confidence: float = 0.30
 
+    # Minimum lead time (hours) — skip markets too close to expiry
+    min_lead_time_hours: float = 6.0
+
     # SQLite database path for signal tracking
     db_path: Path = Path.home() / ".weather-edge" / "signals.db"
 

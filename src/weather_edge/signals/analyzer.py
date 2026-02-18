@@ -77,6 +77,9 @@ def generate_signal(
     if abs(model_prob - 0.5) < 1e-4:
         return None
 
+    if estimate.lead_time_hours < settings.min_lead_time_hours:
+        return None
+
     if abs(edge) < settings.min_edge:
         return None
 
