@@ -1,5 +1,5 @@
 [phases.install]
-cmds = ["pip install -e ."]
+cmds = ["pip install --no-cache-dir ."]
 
 [start]
 cmd = "python -m weather_edge.cli scan --notify"
