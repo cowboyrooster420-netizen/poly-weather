@@ -63,6 +63,78 @@ def _get_daily_members(
     return None
 
 
+def _compute_ensemble_prob_between(
+    valid: np.ndarray,
+    lower: float,
+    upper: float,
+    lead_time_hours: float,
+) -> tuple[float, float]:
+    """Compute BETWEEN probability using hybrid empirical-parametric blend.
+
+    Narrow bands lean on empirical member counting; wide bands converge
+    to parametric CDF difference.  Returns (raw_prob, calibrated_prob).
+
+    Args:
+        valid: 1-D array of ensemble member values with NaN already removed.
+    """
+    if len(valid) < 3:
+        return 0.5, 0.5
+
+    band_width = upper - lower
+    if band_width <= 0:
+        return 0.0, 0.0
+
+    n_members = len(valid)
+
+    # --- Empirical probability (raw): fraction of members in [lower, upper] ---
+    def _empirical(arr: np.ndarray) -> float:
+        count = np.sum((arr >= lower) & (arr <= upper))
+        prob = float(count) / len(arr)
+        # Laplace continuity correction: if no members land in the band but
+        # the band overlaps the member range, use a small floor instead of 0.
+        if prob == 0.0:
+            arr_min, arr_max = float(np.min(arr)), float(np.max(arr))
+            if upper >= arr_min and lower <= arr_max:
+                prob = 0.5 / len(arr)
+        return prob
+
+    raw_empirical = _empirical(valid)
+
+    # --- Parametric probabilities ---
+    raw_mu, raw_sigma = float(np.mean(valid)), float(np.std(valid, ddof=1))
+    if raw_sigma < 0.01:
+        raw_sigma = 0.01
+
+    raw_parametric = float(
+        stats.norm.cdf(upper, raw_mu, raw_sigma)
+        - stats.norm.cdf(lower, raw_mu, raw_sigma)
+    )
+
+    inflated = inflate_ensemble_spread(valid, lead_time_hours)
+    cal_mu, cal_sigma = float(np.mean(inflated)), float(np.std(inflated, ddof=1))
+    if cal_sigma < 0.01:
+        cal_sigma = 0.01
+
+    cal_parametric = float(
+        stats.norm.cdf(upper, cal_mu, cal_sigma)
+        - stats.norm.cdf(lower, cal_mu, cal_sigma)
+    )
+
+    # Empirical count from inflated members for calibrated path
+    cal_empirical = _empirical(inflated)
+
+    # --- Sigmoid blend weighted by band_width / sigma ---
+    # Crossover at 1.5σ band width; ~88% parametric at 2.5σ, ~5% at 0.5σ
+    normalized_width = band_width / raw_sigma
+    w_parametric = 1.0 / (1.0 + np.exp(-2.0 * (normalized_width - 1.5)))
+    w_empirical = 1.0 - w_parametric
+
+    raw_prob = w_empirical * raw_empirical + w_parametric * raw_parametric
+    cal_prob = w_empirical * cal_empirical + w_parametric * cal_parametric
+
+    return float(raw_prob), float(cal_prob)
+
+
 def _compute_ensemble_prob(
     members: np.ndarray,
     threshold: float,
@@ -95,13 +167,8 @@ def _compute_ensemble_prob(
         raw_prob = 1.0 - stats.norm.cdf(threshold, raw_mu, raw_sigma)
         cal_prob = 1.0 - stats.norm.cdf(threshold, mu, sigma)
     elif comparison == Comparison.BETWEEN and threshold_upper is not None:
-        raw_prob = (
-            stats.norm.cdf(threshold_upper, raw_mu, raw_sigma)
-            - stats.norm.cdf(threshold, raw_mu, raw_sigma)
-        )
-        cal_prob = (
-            stats.norm.cdf(threshold_upper, mu, sigma)
-            - stats.norm.cdf(threshold, mu, sigma)
+        return _compute_ensemble_prob_between(
+            valid, threshold, threshold_upper, lead_time_hours,
         )
     elif comparison == Comparison.BELOW:
         raw_prob = stats.norm.cdf(threshold, raw_mu, raw_sigma)

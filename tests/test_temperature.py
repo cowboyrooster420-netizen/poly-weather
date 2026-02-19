@@ -662,3 +662,133 @@ async def test_hrrr_nan_temperature_graceful(now):
     # NaN HRRR should have no effect (tiny float diff from clock drift between calls)
     assert abs(est_nan_hrrr.probability - est_no_hrrr.probability) < 1e-6
     assert "HRRR" not in est_nan_hrrr.sources_used
+
+
+# --- Narrow BETWEEN bucket tests ---
+
+
+@pytest.mark.asyncio
+async def test_narrow_between_at_mean(now):
+    """1°F bucket centered on ensemble mean should give 10-50% probability."""
+    np.random.seed(42)
+    times = [now + timedelta(hours=i) for i in range(48)]
+    n = len(times)
+    # Mean ~28C (82.4F), std ~2C — bucket 82-83F (27.78-28.33C) is ~0.56C wide
+    ecmwf = EnsembleForecast(
+        source="ecmwf", lat=25.76, lon=-80.19,
+        times=times,
+        temperature_2m=np.random.normal(28, 2, (n, 51)),
+        precipitation=np.zeros((n, 51)),
+    )
+
+    params = MarketParams(
+        market_type=MarketType.TEMPERATURE,
+        location="Miami, FL",
+        lat_lon=(25.76, -80.19),
+        threshold=82.0,
+        threshold_upper=83.0,
+        comparison=Comparison.BETWEEN,
+        unit="F",
+        target_date=now + timedelta(hours=24),
+    )
+
+    model = TemperatureModel()
+    estimate = await model.estimate(params, gfs=None, ecmwf=ecmwf, noaa=None)
+
+    # Should be meaningful (5-50%), not the ~0.1% the old parametric gave
+    assert estimate.probability > 0.05
+    assert estimate.probability < 0.50
+
+
+@pytest.mark.asyncio
+async def test_narrow_between_offset_from_mean(now):
+    """1°F bucket ~2°F from mean should still give > 3%."""
+    np.random.seed(42)
+    times = [now + timedelta(hours=i) for i in range(48)]
+    n = len(times)
+    # Mean ~28C (82.4F), bucket 84-85F (28.89-29.44C) — about 1σ/2 away
+    ecmwf = EnsembleForecast(
+        source="ecmwf", lat=25.76, lon=-80.19,
+        times=times,
+        temperature_2m=np.random.normal(28, 2, (n, 51)),
+        precipitation=np.zeros((n, 51)),
+    )
+
+    params = MarketParams(
+        market_type=MarketType.TEMPERATURE,
+        location="Miami, FL",
+        lat_lon=(25.76, -80.19),
+        threshold=84.0,
+        threshold_upper=85.0,
+        comparison=Comparison.BETWEEN,
+        unit="F",
+        target_date=now + timedelta(hours=24),
+    )
+
+    model = TemperatureModel()
+    estimate = await model.estimate(params, gfs=None, ecmwf=ecmwf, noaa=None)
+
+    assert estimate.probability > 0.03
+
+
+@pytest.mark.asyncio
+async def test_wide_between_unchanged(now):
+    """Wide 10°F band should behave similarly to pure parametric."""
+    np.random.seed(42)
+    times = [now + timedelta(hours=i) for i in range(48)]
+    n = len(times)
+    # Mean ~28C, asking about 75-85F (23.89-29.44C) — ~5.5C = ~2.8σ wide
+    ecmwf = EnsembleForecast(
+        source="ecmwf", lat=25.76, lon=-80.19,
+        times=times,
+        temperature_2m=np.random.normal(28, 2, (n, 51)),
+        precipitation=np.zeros((n, 51)),
+    )
+
+    params = MarketParams(
+        market_type=MarketType.TEMPERATURE,
+        location="Miami, FL",
+        lat_lon=(25.76, -80.19),
+        threshold=75.0,
+        threshold_upper=85.0,
+        comparison=Comparison.BETWEEN,
+        unit="F",
+        target_date=now + timedelta(hours=24),
+    )
+
+    model = TemperatureModel()
+    estimate = await model.estimate(params, gfs=None, ecmwf=ecmwf, noaa=None)
+
+    # Wide band centered around mean should capture most of the mass
+    assert estimate.probability > 0.60
+
+
+@pytest.mark.asyncio
+async def test_narrow_between_far_from_mean_stays_low(now):
+    """Narrow bucket very far from mean should remain < 1%."""
+    np.random.seed(42)
+    times = [now + timedelta(hours=i) for i in range(48)]
+    n = len(times)
+    # Mean ~35C (95F), asking about 0-5F (-17.8 to -15C) — way below
+    ecmwf = EnsembleForecast(
+        source="ecmwf", lat=33.45, lon=-112.07,
+        times=times,
+        temperature_2m=np.random.normal(35, 3, (n, 51)),
+        precipitation=np.zeros((n, 51)),
+    )
+
+    params = MarketParams(
+        market_type=MarketType.TEMPERATURE,
+        location="Phoenix, AZ",
+        lat_lon=(33.45, -112.07),
+        threshold=0.0,
+        threshold_upper=5.0,
+        comparison=Comparison.BETWEEN,
+        unit="F",
+        target_date=now + timedelta(hours=24),
+    )
+
+    model = TemperatureModel()
+    estimate = await model.estimate(params, gfs=None, ecmwf=ecmwf, noaa=None)
+
+    assert estimate.probability < 0.01
