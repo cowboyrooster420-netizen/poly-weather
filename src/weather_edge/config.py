@@ -41,8 +41,9 @@ class Settings(BaseSettings):
     # CLOB API base URL
     clob_api_url: str = "https://clob.polymarket.com"
 
-    # Open-Meteo base URL
+    # Open-Meteo base URLs
     openmeteo_api_url: str = "https://ensemble-api.open-meteo.com/v1"
+    openmeteo_forecast_api_url: str = "https://api.open-meteo.com/v1"
 
     # NOAA/NWS base URL
     nws_api_url: str = "https://api.weather.gov"

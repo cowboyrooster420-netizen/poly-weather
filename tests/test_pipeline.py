@@ -127,7 +127,8 @@ async def test_fetch_weather_data_groups_by_location(mock_weather_markets, now):
         return None
 
     with patch("weather_edge.pipeline.fetch_both_ensembles", side_effect=mock_fetch_both), \
-         patch("weather_edge.pipeline.fetch_noaa_forecast", side_effect=mock_fetch_noaa):
+         patch("weather_edge.pipeline.fetch_noaa_forecast", side_effect=mock_fetch_noaa), \
+         patch("weather_edge.pipeline.fetch_hrrr", new_callable=AsyncMock, return_value=None):
         weather_data = await fetch_weather_data(mock_weather_markets)
 
     # Two different locations → two fetches
@@ -169,7 +170,8 @@ async def test_fetch_weather_data_deduplicates(now):
         return None
 
     with patch("weather_edge.pipeline.fetch_both_ensembles", side_effect=mock_fetch_both), \
-         patch("weather_edge.pipeline.fetch_noaa_forecast", side_effect=mock_fetch_noaa):
+         patch("weather_edge.pipeline.fetch_noaa_forecast", side_effect=mock_fetch_noaa), \
+         patch("weather_edge.pipeline.fetch_hrrr", new_callable=AsyncMock, return_value=None):
         weather_data = await fetch_weather_data(markets)
 
     # All 5 markets share one location → only one fetch
@@ -188,13 +190,14 @@ async def test_fetch_weather_data_handles_errors(mock_weather_markets, now):
         return None
 
     with patch("weather_edge.pipeline.fetch_both_ensembles", side_effect=mock_fetch_both), \
-         patch("weather_edge.pipeline.fetch_noaa_forecast", side_effect=mock_fetch_noaa):
+         patch("weather_edge.pipeline.fetch_noaa_forecast", side_effect=mock_fetch_noaa), \
+         patch("weather_edge.pipeline.fetch_hrrr", new_callable=AsyncMock, return_value=None):
         weather_data = await fetch_weather_data(mock_weather_markets)
 
     # Should still have entries (with None values) not crash
     assert len(weather_data) == 2
     for key, val in weather_data.items():
-        assert val == (None, None, None)
+        assert val == (None, None, None, None)
 
 
 @pytest.mark.asyncio
@@ -211,8 +214,8 @@ async def test_run_forecasts(mock_weather_markets, now):
     gfs2 = _make_ensemble(lat2, lon2, "gfs", 31, now)
 
     weather_data = {
-        key: (gfs, ecmwf, None),
-        key2: (gfs2, ecmwf2, None),
+        key: (gfs, ecmwf, None, None),
+        key2: (gfs2, ecmwf2, None, None),
     }
 
     results = await run_forecasts(mock_weather_markets, weather_data)
@@ -287,11 +290,13 @@ async def test_run_pipeline_end_to_end(gamma_api_response, now):
          patch("weather_edge.pipeline.parse_market", side_effect=mock_parse), \
          patch("weather_edge.pipeline.fetch_both_ensembles", new_callable=AsyncMock) as mock_fetch_ens, \
          patch("weather_edge.pipeline.fetch_noaa_forecast", new_callable=AsyncMock) as mock_fetch_noaa, \
+         patch("weather_edge.pipeline.fetch_hrrr", new_callable=AsyncMock) as mock_fetch_hrrr, \
          patch("weather_edge.signals.tracker.SignalTracker.log_signals", new_callable=AsyncMock) as mock_log:
 
         mock_fetch_markets.return_value = gamma_api_response
         mock_fetch_ens.return_value = (gfs, ecmwf)
         mock_fetch_noaa.return_value = None
+        mock_fetch_hrrr.return_value = None
         mock_log.return_value = [1, 2, 3]
 
         signals = await run_pipeline()

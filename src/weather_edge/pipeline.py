@@ -25,9 +25,9 @@ from weather_edge.notifications.telegram import TelegramNotifier
 from weather_edge.signals.analyzer import generate_signal
 from weather_edge.signals.models import Signal
 from weather_edge.signals.tracker import SignalTracker
-from weather_edge.weather.models import EnsembleForecast, NOAAForecast
+from weather_edge.weather.models import EnsembleForecast, HRRRForecast, NOAAForecast
 from weather_edge.weather.noaa import fetch_noaa_forecast
-from weather_edge.weather.openmeteo import fetch_both_ensembles
+from weather_edge.weather.openmeteo import fetch_both_ensembles, fetch_hrrr
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -80,11 +80,12 @@ async def scan_markets() -> list[WeatherMarket]:
 
 async def _fetch_weather_for_location(
     lat: float, lon: float,
-) -> tuple[EnsembleForecast | None, EnsembleForecast | None, NOAAForecast | None]:
+) -> tuple[EnsembleForecast | None, EnsembleForecast | None, NOAAForecast | None, HRRRForecast | None]:
     """Fetch all weather data for a single location."""
     gfs: EnsembleForecast | None = None
     ecmwf: EnsembleForecast | None = None
     noaa: NOAAForecast | None = None
+    hrrr: HRRRForecast | None = None
 
     try:
         gfs, ecmwf = await fetch_both_ensembles(lat, lon)
@@ -105,12 +106,17 @@ async def _fetch_weather_for_location(
     except httpx.TimeoutException:
         logger.info("NWS timeout for (%.2f, %.2f)", lat, lon)
 
-    return gfs, ecmwf, noaa
+    try:
+        hrrr = await fetch_hrrr(lat, lon)
+    except (httpx.HTTPStatusError, httpx.TimeoutException, ValueError, KeyError) as exc:
+        logger.info("HRRR unavailable for (%.2f, %.2f): %s", lat, lon, exc)
+
+    return gfs, ecmwf, noaa, hrrr
 
 
 async def fetch_weather_data(
     markets: list[WeatherMarket],
-) -> dict[LatLon, tuple[EnsembleForecast | None, EnsembleForecast | None, NOAAForecast | None]]:
+) -> dict[LatLon, tuple[EnsembleForecast | None, EnsembleForecast | None, NOAAForecast | None, HRRRForecast | None]]:
     """Fetch weather data grouped by location (deduped).
 
     Markets at the same location share one set of API calls.
@@ -158,7 +164,7 @@ async def fetch_weather_data(
     for latlon, result in zip(latlon_list, fetched):
         if isinstance(result, BaseException):
             console.print(f"  [red]Error fetching ({latlon[0]:.2f}, {latlon[1]:.2f}): {result}[/red]")
-            results[latlon] = (None, None, None)
+            results[latlon] = (None, None, None, None)
         else:
             results[latlon] = result
 
@@ -191,7 +197,7 @@ async def run_forecasts(
             continue
 
         # Get weather data for this market's location
-        gfs, ecmwf, noaa = None, None, None
+        gfs, ecmwf, noaa, hrrr = None, None, None, None
         if market.params.lat_lon:
             key = (
                 round(market.params.lat_lon[0], 2),
@@ -199,10 +205,10 @@ async def run_forecasts(
             )
             weather = weather_data.get(key)
             if weather:
-                gfs, ecmwf, noaa = weather
+                gfs, ecmwf, noaa, hrrr = weather
 
         try:
-            estimate = await model.estimate(market.params, gfs, ecmwf, noaa)
+            estimate = await model.estimate(market.params, gfs, ecmwf, noaa, hrrr=hrrr)
             results.append((market, estimate))
             console.print(
                 f"  {market.params.market_type.value}: "

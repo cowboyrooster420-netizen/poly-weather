@@ -41,6 +41,23 @@ class EnsembleForecast:
 
 
 @dataclass
+class HRRRForecast:
+    """HRRR deterministic forecast from Open-Meteo.
+
+    Attributes:
+        lat: latitude of forecast point
+        lon: longitude of forecast point
+        times: array of forecast valid times
+        temperature_2m: (n_times,) temperature in Celsius — single values, not members
+    """
+
+    lat: float
+    lon: float
+    times: list[datetime]
+    temperature_2m: NDArray[np.float64]
+
+
+@dataclass
 class NOAAForecast:
     """NOAA/NWS forecast data for a US location.
 

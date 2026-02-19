@@ -24,7 +24,7 @@ from weather_edge.forecasting.utils import (
     find_period_time_indices,
 )
 from weather_edge.markets.models import Comparison, MarketParams
-from weather_edge.weather.models import EnsembleForecast, NOAAForecast
+from weather_edge.weather.models import EnsembleForecast, HRRRForecast, NOAAForecast
 
 logger = logging.getLogger(__name__)
 
@@ -130,8 +130,14 @@ class PrecipitationModel:
         gfs: EnsembleForecast | None,
         ecmwf: EnsembleForecast | None,
         noaa: NOAAForecast | None,
+        *,
+        hrrr: HRRRForecast | None = None,
     ) -> ProbabilityEstimate:
-        """Estimate probability of precipitation exceeding threshold."""
+        """Estimate probability of precipitation exceeding threshold.
+
+        Note: hrrr is accepted for protocol conformance but unused —
+        HRRR only provides temperature data, not precipitation.
+        """
         threshold = params.threshold
         if threshold is None:
             return ProbabilityEstimate(

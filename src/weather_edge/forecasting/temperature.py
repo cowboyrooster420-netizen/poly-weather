@@ -20,7 +20,7 @@ from weather_edge.forecasting.calibration import (
 )
 from weather_edge.forecasting.utils import find_closest_time_idx, find_period_time_indices
 from weather_edge.markets.models import Comparison, MarketParams
-from weather_edge.weather.models import EnsembleForecast, NOAAForecast
+from weather_edge.weather.models import EnsembleForecast, HRRRForecast, NOAAForecast
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +160,54 @@ def _compute_dynamic_weights(
     return [w / adj_total for w in adjusted]
 
 
+def _hrrr_blend_weight(lead_time_hours: float) -> float:
+    """Return the HRRR blend weight for the given lead time.
+
+    Beyond 18h → 0%, 12-18h → 25%, 6-12h → 50%, <6h → 75%.
+    """
+    if lead_time_hours >= 18:
+        return 0.0
+    if lead_time_hours >= 12:
+        return 0.25
+    if lead_time_hours >= 6:
+        return 0.50
+    return 0.75
+
+
+def _apply_hrrr_correction(
+    members: np.ndarray,
+    hrrr: HRRRForecast,
+    target_time: datetime,
+    lead_time_hours: float,
+) -> tuple[np.ndarray, str | None]:
+    """Shift ensemble members toward HRRR deterministic forecast.
+
+    Preserves spread — only moves the center.
+
+    Returns:
+        (corrected_members, detail_string_or_None)
+    """
+    weight = _hrrr_blend_weight(lead_time_hours)
+    if weight == 0.0:
+        return members, None
+
+    # Find closest HRRR time
+    idx = find_closest_time_idx(hrrr.times, target_time)
+    if idx is None:
+        return members, None
+
+    hrrr_temp_c = float(hrrr.temperature_2m[idx])
+    if np.isnan(hrrr_temp_c):
+        return members, None
+
+    ensemble_mean = float(np.nanmean(members))
+    shift = weight * (hrrr_temp_c - ensemble_mean)
+    corrected = members + shift
+
+    detail = f"HRRR correction: {shift:+.1f}°C ({weight:.0%} @ {lead_time_hours:.0f}h)"
+    return corrected, detail
+
+
 class TemperatureModel:
     """Temperature threshold forecast model."""
 
@@ -169,6 +217,8 @@ class TemperatureModel:
         gfs: EnsembleForecast | None,
         ecmwf: EnsembleForecast | None,
         noaa: NOAAForecast | None,
+        *,
+        hrrr: HRRRForecast | None = None,
     ) -> ProbabilityEstimate:
         """Estimate probability of temperature exceeding/falling below threshold."""
         settings = get_settings()
@@ -232,6 +282,8 @@ class TemperatureModel:
         sources: list[str] = []
         details_parts: list[str] = []
 
+        hrrr_applied = False
+
         # ECMWF ensemble
         if ecmwf is not None and ecmwf.n_members > 0:
             members = None
@@ -242,6 +294,18 @@ class TemperatureModel:
                 if idx is not None:
                     members = ecmwf.temperature_2m[idx, :]
             if members is not None:
+                # Apply HRRR bias correction before computing CDF.
+                # Skip for daily-aggregated markets — HRRR provides single-hour
+                # values which are not comparable to daily max/min.
+                if hrrr is not None and params.daily_aggregation is None:
+                    members, hrrr_detail = _apply_hrrr_correction(
+                        members, hrrr, target_time, lead_time_hours,
+                    )
+                    if hrrr_detail is not None:
+                        if not hrrr_applied:
+                            details_parts.append(hrrr_detail)
+                        hrrr_applied = True
+
                 raw_p, cal_p = _compute_ensemble_prob(
                     members, threshold_c, params.comparison, lead_time_hours,
                     threshold_upper_c,
@@ -264,6 +328,16 @@ class TemperatureModel:
                 if idx is not None:
                     members = gfs.temperature_2m[idx, :]
             if members is not None:
+                # Apply HRRR bias correction before computing CDF (single-timestep only)
+                if hrrr is not None and params.daily_aggregation is None:
+                    members, hrrr_detail = _apply_hrrr_correction(
+                        members, hrrr, target_time, lead_time_hours,
+                    )
+                    if hrrr_detail is not None:
+                        if not hrrr_applied:
+                            details_parts.append(hrrr_detail)
+                        hrrr_applied = True
+
                 raw_p, cal_p = _compute_ensemble_prob(
                     members, threshold_c, params.comparison, lead_time_hours,
                     threshold_upper_c,
@@ -276,6 +350,9 @@ class TemperatureModel:
                     f"GFS: mean={mean_c:.1f}C, "
                     f"std={np.nanstd(members):.1f}C, p={cal_p:.3f}"
                 )
+
+        if hrrr_applied:
+            sources.append("HRRR")
 
         # NOAA forecast (supplementary, not blended directly)
         if noaa is not None and noaa.periods:

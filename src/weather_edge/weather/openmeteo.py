@@ -1,7 +1,8 @@
-"""Open-Meteo ensemble API client (GFS + ECMWF)."""
+"""Open-Meteo ensemble API client (GFS + ECMWF) and HRRR deterministic."""
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 import numpy as np
@@ -9,7 +10,9 @@ import numpy as np
 from weather_edge.common.http import HttpClient
 from weather_edge.common.types import LatLon
 from weather_edge.config import get_settings
-from weather_edge.weather.models import EnsembleForecast
+from weather_edge.weather.models import EnsembleForecast, HRRRForecast
+
+logger = logging.getLogger(__name__)
 
 
 async def fetch_ensemble(
@@ -91,3 +94,53 @@ async def fetch_both_ensembles(lat: float, lon: float) -> tuple[EnsembleForecast
     ecmwf_task = asyncio.create_task(fetch_ensemble(lat, lon, "ecmwf"))
     gfs, ecmwf = await asyncio.gather(gfs_task, ecmwf_task)
     return gfs, ecmwf
+
+
+def _is_conus(lat: float, lon: float) -> bool:
+    """Check whether (lat, lon) is within the CONUS bounding box."""
+    return 24.0 <= lat <= 50.0 and -125.0 <= lon <= -66.0
+
+
+async def fetch_hrrr(lat: float, lon: float) -> HRRRForecast | None:
+    """Fetch HRRR deterministic forecast from Open-Meteo.
+
+    Uses the standard forecast endpoint with ``models=hrrr_conus``.
+    Returns ``None`` for non-CONUS locations.
+    """
+    if not _is_conus(lat, lon):
+        logger.debug("HRRR skipped: (%.2f, %.2f) outside CONUS", lat, lon)
+        return None
+
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "hourly": "temperature_2m",
+        "models": "hrrr_conus",
+        "timeformat": "unixtime",
+    }
+
+    settings = get_settings()
+
+    async with HttpClient(base_url=settings.openmeteo_forecast_api_url) as client:
+        resp = await client.get("/forecast", params=params)
+        data = resp.json()
+
+    hourly = data.get("hourly")
+    if hourly is None:
+        logger.warning("HRRR response missing 'hourly' key for (%.2f, %.2f)", lat, lon)
+        return None
+
+    times = [datetime.fromtimestamp(t, tz=timezone.utc) for t in hourly["time"]]
+    temps = hourly.get("temperature_2m")
+    if temps is None:
+        logger.warning("HRRR response missing temperature_2m for (%.2f, %.2f)", lat, lon)
+        return None
+
+    temp_array = np.array(temps, dtype=np.float64)
+
+    return HRRRForecast(
+        lat=data.get("latitude", lat),
+        lon=data.get("longitude", lon),
+        times=times,
+        temperature_2m=temp_array,
+    )

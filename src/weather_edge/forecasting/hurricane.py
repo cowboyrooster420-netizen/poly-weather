@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from weather_edge.forecasting.base import ProbabilityEstimate
 from weather_edge.forecasting.calibration import confidence_from_lead_time
 from weather_edge.markets.models import MarketParams
-from weather_edge.weather.models import EnsembleForecast, NOAAForecast
+from weather_edge.weather.models import EnsembleForecast, HRRRForecast, NOAAForecast
 
 # Rough climatological base rates for US hurricane landfall
 # Source: NOAA historical records, averaged over modern era
@@ -37,6 +37,8 @@ class HurricaneModel:
         gfs: EnsembleForecast | None,
         ecmwf: EnsembleForecast | None,
         noaa: NOAAForecast | None,
+        *,
+        hrrr: HRRRForecast | None = None,
     ) -> ProbabilityEstimate:
         """Produce a stub hurricane probability estimate."""
         now = datetime.now(timezone.utc)

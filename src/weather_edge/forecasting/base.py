@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from weather_edge.markets.models import MarketParams
-from weather_edge.weather.models import EnsembleForecast, NOAAForecast
+from weather_edge.weather.models import EnsembleForecast, HRRRForecast, NOAAForecast
 
 
 @dataclass
@@ -39,6 +39,8 @@ class ForecastModel(Protocol):
         gfs: EnsembleForecast | None,
         ecmwf: EnsembleForecast | None,
         noaa: NOAAForecast | None,
+        *,
+        hrrr: HRRRForecast | None = None,
     ) -> ProbabilityEstimate:
         """Produce a calibrated probability estimate for the market.
 
@@ -47,6 +49,7 @@ class ForecastModel(Protocol):
             gfs: GFS ensemble forecast (31 members)
             ecmwf: ECMWF ensemble forecast (51 members)
             noaa: NOAA/NWS forecast (US only, may be None)
+            hrrr: HRRR deterministic forecast (CONUS only, may be None)
 
         Returns:
             ProbabilityEstimate with calibrated probability and confidence

@@ -7,9 +7,9 @@ from datetime import datetime, timedelta, timezone
 import numpy as np
 import pytest
 
-from weather_edge.forecasting.temperature import TemperatureModel, _compute_dynamic_weights
+from weather_edge.forecasting.temperature import TemperatureModel, _compute_dynamic_weights, _hrrr_blend_weight
 from weather_edge.markets.models import Comparison, MarketParams, MarketType
-from weather_edge.weather.models import EnsembleForecast
+from weather_edge.weather.models import EnsembleForecast, HRRRForecast
 
 
 @pytest.mark.asyncio
@@ -494,3 +494,171 @@ class TestDynamicWeighting:
         # With dynamic weighting, result should be higher than naive 60/40 blend
         # because GFS (the outlier) gets downweighted
         assert estimate.probability > 0.25
+
+
+# --- HRRR bias correction tests ---
+
+
+@pytest.mark.asyncio
+async def test_hrrr_bias_correction_short_lead(now):
+    """At 8h lead time (50% weight), ensemble mean should shift toward HRRR."""
+    np.random.seed(42)
+    times = [now + timedelta(hours=i) for i in range(48)]
+    n = len(times)
+
+    # Ensemble mean ~20C
+    ecmwf = EnsembleForecast(
+        source="ecmwf", lat=33.45, lon=-112.07,
+        times=times,
+        temperature_2m=np.random.normal(20, 2, (n, 51)),
+        precipitation=np.zeros((n, 51)),
+    )
+
+    # HRRR says 25C — 5C warmer than ensemble mean
+    hrrr = HRRRForecast(
+        lat=33.45, lon=-112.07,
+        times=times,
+        temperature_2m=np.full(n, 25.0),
+    )
+
+    # Threshold at 22C — ensemble mean (20C) is below, HRRR (25C) well above
+    target_time = now + timedelta(hours=8)
+    params = MarketParams(
+        market_type=MarketType.TEMPERATURE,
+        location="Phoenix, AZ",
+        lat_lon=(33.45, -112.07),
+        threshold=22.0,
+        comparison=Comparison.ABOVE,
+        unit="C",
+        target_date=target_time,
+    )
+
+    model = TemperatureModel()
+
+    # Without HRRR
+    est_no_hrrr = await model.estimate(params, gfs=None, ecmwf=ecmwf, noaa=None)
+    # With HRRR (8h lead → 50% weight → mean shifts +2.5C toward 25C)
+    est_with_hrrr = await model.estimate(params, gfs=None, ecmwf=ecmwf, noaa=None, hrrr=hrrr)
+
+    # HRRR shifts mean upward → probability of exceeding 22C should increase
+    assert est_with_hrrr.probability > est_no_hrrr.probability
+    assert "HRRR" in est_with_hrrr.sources_used
+    assert "HRRR correction" in est_with_hrrr.details
+
+
+@pytest.mark.asyncio
+async def test_hrrr_ignored_beyond_18h(now):
+    """At 24h lead time, HRRR should have no effect."""
+    np.random.seed(42)
+    times = [now + timedelta(hours=i) for i in range(48)]
+    n = len(times)
+
+    ecmwf = EnsembleForecast(
+        source="ecmwf", lat=33.45, lon=-112.07,
+        times=times,
+        temperature_2m=np.random.normal(20, 2, (n, 51)),
+        precipitation=np.zeros((n, 51)),
+    )
+
+    # HRRR says something very different
+    hrrr = HRRRForecast(
+        lat=33.45, lon=-112.07,
+        times=times,
+        temperature_2m=np.full(n, 30.0),
+    )
+
+    target_time = now + timedelta(hours=24)
+    params = MarketParams(
+        market_type=MarketType.TEMPERATURE,
+        location="Phoenix, AZ",
+        lat_lon=(33.45, -112.07),
+        threshold=22.0,
+        comparison=Comparison.ABOVE,
+        unit="C",
+        target_date=target_time,
+    )
+
+    model = TemperatureModel()
+    est_no_hrrr = await model.estimate(params, gfs=None, ecmwf=ecmwf, noaa=None)
+    est_with_hrrr = await model.estimate(params, gfs=None, ecmwf=ecmwf, noaa=None, hrrr=hrrr)
+
+    # Should be identical — HRRR ignored beyond 18h
+    assert abs(est_with_hrrr.probability - est_no_hrrr.probability) < 1e-9
+    assert "HRRR" not in est_with_hrrr.sources_used
+
+
+@pytest.mark.asyncio
+async def test_hrrr_none_graceful(ecmwf_forecast, gfs_forecast, temperature_params):
+    """hrrr=None should not crash — same behavior as before."""
+    model = TemperatureModel()
+    estimate = await model.estimate(
+        temperature_params, gfs_forecast, ecmwf_forecast, noaa=None, hrrr=None,
+    )
+
+    assert 0 < estimate.probability < 1
+    assert estimate.confidence > 0
+    assert "HRRR" not in estimate.sources_used
+
+
+class TestHRRRBlendWeight:
+    """Unit tests for _hrrr_blend_weight boundary conditions."""
+
+    def test_under_6h(self):
+        assert _hrrr_blend_weight(0) == 0.75
+        assert _hrrr_blend_weight(3) == 0.75
+        assert _hrrr_blend_weight(5.99) == 0.75
+
+    def test_6_to_12h(self):
+        assert _hrrr_blend_weight(6.0) == 0.50
+        assert _hrrr_blend_weight(9) == 0.50
+        assert _hrrr_blend_weight(11.99) == 0.50
+
+    def test_12_to_18h(self):
+        assert _hrrr_blend_weight(12.0) == 0.25
+        assert _hrrr_blend_weight(15) == 0.25
+        assert _hrrr_blend_weight(17.99) == 0.25
+
+    def test_beyond_18h(self):
+        assert _hrrr_blend_weight(18.0) == 0.0
+        assert _hrrr_blend_weight(24) == 0.0
+        assert _hrrr_blend_weight(100) == 0.0
+
+
+@pytest.mark.asyncio
+async def test_hrrr_nan_temperature_graceful(now):
+    """HRRR with NaN temperatures should be silently skipped."""
+    np.random.seed(42)
+    times = [now + timedelta(hours=i) for i in range(48)]
+    n = len(times)
+
+    ecmwf = EnsembleForecast(
+        source="ecmwf", lat=33.45, lon=-112.07,
+        times=times,
+        temperature_2m=np.random.normal(20, 2, (n, 51)),
+        precipitation=np.zeros((n, 51)),
+    )
+
+    hrrr = HRRRForecast(
+        lat=33.45, lon=-112.07,
+        times=times,
+        temperature_2m=np.full(n, np.nan),
+    )
+
+    target_time = now + timedelta(hours=8)
+    params = MarketParams(
+        market_type=MarketType.TEMPERATURE,
+        location="Phoenix, AZ",
+        lat_lon=(33.45, -112.07),
+        threshold=22.0,
+        comparison=Comparison.ABOVE,
+        unit="C",
+        target_date=target_time,
+    )
+
+    model = TemperatureModel()
+    est_no_hrrr = await model.estimate(params, gfs=None, ecmwf=ecmwf, noaa=None)
+    est_nan_hrrr = await model.estimate(params, gfs=None, ecmwf=ecmwf, noaa=None, hrrr=hrrr)
+
+    # NaN HRRR should have no effect (tiny float diff from clock drift between calls)
+    assert abs(est_nan_hrrr.probability - est_no_hrrr.probability) < 1e-6
+    assert "HRRR" not in est_nan_hrrr.sources_used
