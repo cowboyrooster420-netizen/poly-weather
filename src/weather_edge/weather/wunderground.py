@@ -30,6 +30,7 @@ from weather_edge.common.types import fahrenheit_to_celsius
 logger = logging.getLogger(__name__)
 
 _WU_BASE = "https://www.wunderground.com"
+_STATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9]+$")
 
 
 @dataclass
@@ -151,6 +152,10 @@ async def fetch_wu_daily(station_id: str, target_date: date) -> WUDailyObs | Non
 
     Returns None if the page can't be fetched or parsed.
     """
+    if not _STATION_ID_PATTERN.match(station_id):
+        logger.warning("Invalid station_id: %s", station_id)
+        return None
+
     # WU URL format uses non-zero-padded month and day
     date_str = f"{target_date.year}-{target_date.month}-{target_date.day}"
     url = f"{_WU_BASE}/dashboard/pws/{station_id}/table/{date_str}/{date_str}/daily"

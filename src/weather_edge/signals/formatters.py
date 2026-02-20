@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 from rich.console import Console
 from rich.table import Table
@@ -26,7 +26,7 @@ def format_table(signals: list[Signal], console: Console | None = None) -> None:
 
     table = Table(
         title="Weather Edge Signals",
-        caption=f"Generated at {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}",
+        caption=f"Generated at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
         show_lines=True,
     )
 
@@ -113,7 +113,7 @@ def format_telegram_summary(signals: list[Signal], max_chars: int = 4000) -> str
 
     Truncates the signal table to fit within Telegram's message limit.
     """
-    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     count = len(signals)
 
     lines = [

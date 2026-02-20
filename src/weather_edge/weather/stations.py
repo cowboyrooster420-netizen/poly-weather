@@ -108,9 +108,6 @@ _CITY_ALIASES: dict[str, str] = {
     "seoul": "incheon",
     "seoul, kr": "incheon",
     "ankara, tr": "ankara",
-    "saint louis": "st. louis",
-    "dc": "washington",
-    "washington dc": "washington",
 }
 
 # Build reverse index: city name → Station (for O(1) exact lookup).
@@ -137,14 +134,18 @@ def station_for_location(city: str) -> Station | None:
         station_for_location("Seoul, KR") → IINCHE10
     """
     normalized = city.lower().strip()
-    # Strip state/country suffixes like ", GA" or ", TX"
-    if "," in normalized:
-        normalized = normalized.split(",")[0].strip()
 
-    # Exact match (including aliases)
+    # Exact match first (including comma aliases like "atlanta, ga")
     match = _CITY_INDEX.get(normalized)
     if match is not None:
         return match
+
+    # Strip state/country suffix and retry
+    if "," in normalized:
+        normalized = normalized.split(",")[0].strip()
+        match = _CITY_INDEX.get(normalized)
+        if match is not None:
+            return match
 
     # Input-prefix match: "new york city" starts with "new york".
     # Only allow the INPUT to be longer than the station city, not shorter.

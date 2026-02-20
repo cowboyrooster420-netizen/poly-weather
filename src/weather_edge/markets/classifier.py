@@ -13,6 +13,7 @@ import re
 import anthropic
 
 from weather_edge.common.llm import ask_haiku
+from weather_edge.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -86,10 +87,16 @@ async def classify_market(question: str, description: str = "") -> tuple[bool, f
         # Weak keyword in question + strong keyword in description → likely weather
         if _STRONG_KEYWORDS.search(description):
             return True, 0.80
-        # Weak keyword only → not weather
+        # Weak keyword only → ambiguous, try LLM if available
+        if get_settings().anthropic_api_key:
+            return await _llm_classify(question, description)
         return False, 0.70
 
-    # No keywords at all → not weather
+    # No keywords at all → probably not weather, but try LLM if description
+    # contains any weather-adjacent language
+    if description and _WEAK_KEYWORDS.search(description) and get_settings().anthropic_api_key:
+        return await _llm_classify(question, description)
+
     return False, 0.90
 
 

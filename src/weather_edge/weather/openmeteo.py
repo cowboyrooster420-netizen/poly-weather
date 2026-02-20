@@ -68,10 +68,21 @@ async def fetch_ensemble(
         elif key.startswith("precipitation_member"):
             precip_members.append(values)
 
-    # Shape: (n_times, n_members), replace None with NaN
+    # Shape: (n_times, n_members). np.array with float64 converts None → NaN.
     def _to_array(member_lists: list[list]) -> np.ndarray:
         arr = np.array(member_lists, dtype=np.float64).T
-        return np.where(np.isnan(arr), np.nan, arr)
+        # Drop members that are mostly NaN (>50% missing)
+        n_times = arr.shape[0]
+        if n_times > 0:
+            nan_frac = np.isnan(arr).sum(axis=0) / n_times
+            valid_mask = nan_frac < 0.5
+            if valid_mask.any() and not valid_mask.all():
+                logger.warning(
+                    "Dropping %d/%d ensemble members with >50%% NaN",
+                    (~valid_mask).sum(), arr.shape[1],
+                )
+                arr = arr[:, valid_mask]
+        return arr
 
     temp_array = _to_array(temp_members) if temp_members else np.empty((len(times), 0))
     precip_array = _to_array(precip_members) if precip_members else np.empty((len(times), 0))

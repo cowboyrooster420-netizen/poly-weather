@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import numpy as np
 from scipy import stats
@@ -36,19 +37,21 @@ def _get_daily_members(
     forecast: EnsembleForecast,
     target_date: datetime,
     aggregation: str,
-    longitude: float | None = None,
+    tz_name: str | None = None,
 ) -> np.ndarray | None:
     """Get daily max/min temperature per ensemble member.
 
-    Finds all hours on target_date in *local* time (approximated from
-    longitude), takes max or min across hours per member.
+    Finds all hours on target_date in *local* time (using IANA timezone),
+    takes max or min across hours per member.
     Returns shape (n_members,) or None if no hours found.
     """
-    # Shift day boundaries to local midnight using longitude
-    utc_offset_hours = -(longitude / 15.0) if longitude is not None else 0.0
-    offset = timedelta(hours=utc_offset_hours)
-    local_midnight = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
-    day_start = local_midnight + offset
+    # Use actual timezone for correct day boundaries (incl. DST)
+    if tz_name is not None:
+        tz = ZoneInfo(tz_name)
+    else:
+        tz = timezone.utc
+    local_midnight = target_date.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=tz)
+    day_start = local_midnight.astimezone(timezone.utc)
     day_end = day_start + timedelta(hours=24) - timedelta(seconds=1)
     indices = find_period_time_indices(forecast.times, day_start, day_end)
     if not indices:
@@ -274,12 +277,6 @@ def _apply_hrrr_correction(
     return corrected, detail
 
 
-def _resolve_station_id(location: str) -> str | None:
-    """Resolve a market location string to a WU station ID."""
-    station = station_for_location(location)
-    return station.wu_id if station is not None else None
-
-
 def _apply_station_bias_correction(
     members: np.ndarray,
     station_id: str,
@@ -342,16 +339,17 @@ class TemperatureModel:
         target_time = params.target_date
         now = datetime.now(timezone.utc)
 
+        # Resolve WU station for this location (may be None)
+        station = station_for_location(params.location) if params.location else None
+        station_id = station.wu_id if station is not None else None
+        station_tz = station.timezone if station is not None else None
+
         # For daily aggregation markets, compute lead time to local noon
-        # instead of midnight UTC.  Approximate local noon from longitude:
-        # noon_utc_hour = 12 - (longitude / 15)
-        if params.daily_aggregation is not None and params.lat_lon is not None:
-            _, lon = params.lat_lon
-            noon_utc_hour = 12.0 - lon / 15.0  # e.g. Atlanta -84.4 → ~17.6 UTC
+        # using the station's actual IANA timezone (handles DST correctly).
+        if params.daily_aggregation is not None and station_tz is not None:
+            tz = ZoneInfo(station_tz)
             local_noon = target_time.replace(
-                hour=int(noon_utc_hour) % 24,
-                minute=int((noon_utc_hour % 1) * 60),
-                second=0, microsecond=0,
+                hour=12, minute=0, second=0, microsecond=0, tzinfo=tz,
             )
             lead_time_hours = (local_noon - now).total_seconds() / 3600
         else:
@@ -376,16 +374,13 @@ class TemperatureModel:
         details_parts: list[str] = []
 
         hrrr_applied = False
-
-        # Resolve WU station for this location (may be None)
-        station_id = _resolve_station_id(params.location) if params.location else None
         station_bias_applied = False
 
         # ECMWF ensemble
         if ecmwf is not None and ecmwf.n_members > 0:
             members = None
             if params.daily_aggregation is not None:
-                members = _get_daily_members(ecmwf, target_time, params.daily_aggregation, longitude=params.lat_lon[1] if params.lat_lon else None)
+                members = _get_daily_members(ecmwf, target_time, params.daily_aggregation, tz_name=station_tz)
             else:
                 idx = find_closest_time_idx(ecmwf.times, target_time)
                 if idx is not None:
@@ -428,7 +423,7 @@ class TemperatureModel:
         if gfs is not None and gfs.n_members > 0:
             members = None
             if params.daily_aggregation is not None:
-                members = _get_daily_members(gfs, target_time, params.daily_aggregation, longitude=params.lat_lon[1] if params.lat_lon else None)
+                members = _get_daily_members(gfs, target_time, params.daily_aggregation, tz_name=station_tz)
             else:
                 idx = find_closest_time_idx(gfs.times, target_time)
                 if idx is not None:
