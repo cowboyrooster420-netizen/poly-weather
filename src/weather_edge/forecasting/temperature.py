@@ -18,19 +18,18 @@ from weather_edge.forecasting.calibration import (
     confidence_from_lead_time,
     inflate_ensemble_spread,
 )
+from weather_edge.calibration.station_bias import get_station_bias
+from weather_edge.common.types import celsius_to_fahrenheit, fahrenheit_to_celsius
 from weather_edge.forecasting.utils import find_closest_time_idx, find_period_time_indices
 from weather_edge.markets.models import Comparison, MarketParams
 from weather_edge.weather.models import EnsembleForecast, HRRRForecast, NOAAForecast
+from weather_edge.weather.stations import station_for_location
 
 logger = logging.getLogger(__name__)
 
-
-def _celsius_to_fahrenheit(c: float) -> float:
-    return c * 9.0 / 5.0 + 32.0
-
-
-def _fahrenheit_to_celsius(f: float) -> float:
-    return (f - 32.0) * 5.0 / 9.0
+# Local aliases for backward compatibility with callers (and brevity).
+_celsius_to_fahrenheit = celsius_to_fahrenheit
+_fahrenheit_to_celsius = fahrenheit_to_celsius
 
 
 def _get_daily_members(
@@ -275,6 +274,33 @@ def _apply_hrrr_correction(
     return corrected, detail
 
 
+def _resolve_station_id(location: str) -> str | None:
+    """Resolve a market location string to a WU station ID."""
+    station = station_for_location(location)
+    return station.wu_id if station is not None else None
+
+
+def _apply_station_bias_correction(
+    members: np.ndarray,
+    station_id: str,
+    daily_aggregation: str | None,
+) -> tuple[np.ndarray, str | None]:
+    """Shift ensemble members by the station's learned bias.
+
+    Preserves spread — only moves the center, identical to HRRR correction
+    mechanism.
+
+    Returns:
+        (corrected_members, detail_string_or_None)
+    """
+    bias = get_station_bias(station_id, daily_aggregation)
+    if abs(bias) < 0.01:
+        return members, None
+    corrected = members + bias
+    detail = f"station bias: {bias:+.1f}°C ({station_id})"
+    return corrected, detail
+
+
 class TemperatureModel:
     """Temperature threshold forecast model."""
 
@@ -351,6 +377,10 @@ class TemperatureModel:
 
         hrrr_applied = False
 
+        # Resolve WU station for this location (may be None)
+        station_id = _resolve_station_id(params.location) if params.location else None
+        station_bias_applied = False
+
         # ECMWF ensemble
         if ecmwf is not None and ecmwf.n_members > 0:
             members = None
@@ -372,6 +402,15 @@ class TemperatureModel:
                         if not hrrr_applied:
                             details_parts.append(hrrr_detail)
                         hrrr_applied = True
+
+                # Station bias correction (after HRRR, before CDF)
+                if station_id is not None:
+                    members, sb_detail = _apply_station_bias_correction(
+                        members, station_id, params.daily_aggregation,
+                    )
+                    if sb_detail is not None and not station_bias_applied:
+                        details_parts.append(sb_detail)
+                        station_bias_applied = True
 
                 raw_p, cal_p = _compute_ensemble_prob(
                     members, threshold_c, params.comparison, lead_time_hours,
@@ -404,6 +443,15 @@ class TemperatureModel:
                         if not hrrr_applied:
                             details_parts.append(hrrr_detail)
                         hrrr_applied = True
+
+                # Station bias correction (after HRRR, before CDF)
+                if station_id is not None:
+                    members, sb_detail = _apply_station_bias_correction(
+                        members, station_id, params.daily_aggregation,
+                    )
+                    if sb_detail is not None and not station_bias_applied:
+                        details_parts.append(sb_detail)
+                        station_bias_applied = True
 
                 raw_p, cal_p = _compute_ensemble_prob(
                     members, threshold_c, params.comparison, lead_time_hours,

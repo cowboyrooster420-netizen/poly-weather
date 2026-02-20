@@ -1,0 +1,133 @@
+{
+  "version": 1,
+  "generated_at": "2026-02-20T00:00:00Z",
+  "training_days": 0,
+  "stations": {
+    "KGAHAPEV1": {
+      "city": "atlanta",
+      "high_bias_c": 0.0,
+      "low_bias_c": 0.0,
+      "mean_bias_c": 0.0,
+      "high_std_c": 0.0,
+      "low_std_c": 0.0,
+      "n_days": 0
+    },
+    "KNYNEWYO1974": {
+      "city": "new york",
+      "high_bias_c": 0.0,
+      "low_bias_c": 0.0,
+      "mean_bias_c": 0.0,
+      "high_std_c": 0.0,
+      "low_std_c": 0.0,
+      "n_days": 0
+    },
+    "KTXDALLA1276": {
+      "city": "dallas",
+      "high_bias_c": 0.0,
+      "low_bias_c": 0.0,
+      "mean_bias_c": 0.0,
+      "high_std_c": 0.0,
+      "low_std_c": 0.0,
+      "n_days": 0
+    },
+    "KFLHIALE117": {
+      "city": "miami",
+      "high_bias_c": 0.0,
+      "low_bias_c": 0.0,
+      "mean_bias_c": 0.0,
+      "high_std_c": 0.0,
+      "low_std_c": 0.0,
+      "n_days": 0
+    },
+    "KILBENSE15": {
+      "city": "chicago",
+      "high_bias_c": 0.0,
+      "low_bias_c": 0.0,
+      "mean_bias_c": 0.0,
+      "high_std_c": 0.0,
+      "low_std_c": 0.0,
+      "n_days": 0
+    },
+    "KWASEATA17": {
+      "city": "seattle",
+      "high_bias_c": 0.0,
+      "low_bias_c": 0.0,
+      "mean_bias_c": 0.0,
+      "high_std_c": 0.0,
+      "low_std_c": 0.0,
+      "n_days": 0
+    },
+    "IMISSI113": {
+      "city": "toronto",
+      "high_bias_c": 0.0,
+      "low_bias_c": 0.0,
+      "mean_bias_c": 0.0,
+      "high_std_c": 0.0,
+      "low_std_c": 0.0,
+      "n_days": 0
+    },
+    "ILONDO288": {
+      "city": "london",
+      "high_bias_c": 0.0,
+      "low_bias_c": 0.0,
+      "mean_bias_c": 0.0,
+      "high_std_c": 0.0,
+      "low_std_c": 0.0,
+      "n_days": 0
+    },
+    "IMITRY1": {
+      "city": "paris",
+      "high_bias_c": 0.0,
+      "low_bias_c": 0.0,
+      "mean_bias_c": 0.0,
+      "high_std_c": 0.0,
+      "low_std_c": 0.0,
+      "n_days": 0
+    },
+    "IMONTEGR27": {
+      "city": "buenos aires",
+      "high_bias_c": 0.0,
+      "low_bias_c": 0.0,
+      "mean_bias_c": 0.0,
+      "high_std_c": 0.0,
+      "low_std_c": 0.0,
+      "n_days": 0
+    },
+    "IGUARU12": {
+      "city": "sao paulo",
+      "high_bias_c": 0.0,
+      "low_bias_c": 0.0,
+      "mean_bias_c": 0.0,
+      "high_std_c": 0.0,
+      "low_std_c": 0.0,
+      "n_days": 0
+    },
+    "IWGNLYAL3": {
+      "city": "wellington",
+      "high_bias_c": 0.0,
+      "low_bias_c": 0.0,
+      "mean_bias_c": 0.0,
+      "high_std_c": 0.0,
+      "low_std_c": 0.0,
+      "n_days": 0
+    },
+    "IINCHE10": {
+      "city": "incheon",
+      "high_bias_c": 0.0,
+      "low_bias_c": 0.0,
+      "mean_bias_c": 0.0,
+      "high_std_c": 0.0,
+      "low_std_c": 0.0,
+      "n_days": 0
+    },
+    "IANKAR46": {
+      "city": "ankara",
+      "high_bias_c": 0.0,
+      "low_bias_c": 0.0,
+      "mean_bias_c": 0.0,
+      "high_std_c": 0.0,
+      "low_std_c": 0.0,
+      "n_days": 0
+    }
+  }
+}

@@ -279,5 +279,153 @@ def stats() -> None:
     asyncio.run(_run())
 
 
+@app.command()
+def calibrate(
+    station: Optional[str] = typer.Option(
+        None, "--station", "-s",
+        help="Calibrate a single station (WU station ID)",
+    ),
+    days: int = typer.Option(
+        90, "--days", "-d",
+        help="Training window in days",
+    ),
+) -> None:
+    """Compute per-station bias correction from WU history vs ERA5 reanalysis.
+
+    For each station, scrapes WU daily high/low, fetches matching ERA5
+    reanalysis, and computes the systematic bias. Results are saved to
+    ~/.weather-edge/station_biases.json.
+
+    Can be cron'd (e.g. weekly) to keep biases fresh.
+    """
+
+    async def _run() -> None:
+        from weather_edge.calibration.openmeteo_history import (
+            fetch_openmeteo_history,
+            training_window,
+        )
+        from weather_edge.calibration.station_bias import (
+            StationBias,
+            compute_station_bias,
+            save_biases,
+        )
+        from weather_edge.weather.stations import STATIONS
+        from weather_edge.weather.wunderground import fetch_wu_history
+
+        start, end = training_window(days)
+        console.print(
+            f"[bold]Calibrating station biases[/bold]  "
+            f"window: {start} to {end} ({days} days)"
+        )
+
+        # Determine which stations to calibrate
+        if station:
+            if station not in STATIONS:
+                console.print(f"[red]Unknown station: {station}[/red]")
+                console.print(f"Known stations: {', '.join(STATIONS.keys())}")
+                return
+            targets = {station: STATIONS[station]}
+        else:
+            targets = STATIONS
+
+        results: dict[str, StationBias] = {}
+
+        for wu_id, stn in targets.items():
+            console.print(f"\n  [bold]{wu_id}[/bold] ({stn.city})")
+
+            # Fetch WU history
+            console.print(f"    Scraping WU history...", end="")
+            wu_obs = await fetch_wu_history(wu_id, start, end)
+            console.print(f" {len(wu_obs)} days")
+
+            if not wu_obs:
+                console.print("    [yellow]No WU data, skipping[/yellow]")
+                results[wu_id] = StationBias(
+                    station_id=wu_id, city=stn.city,
+                    high_bias_c=0.0, low_bias_c=0.0, mean_bias_c=0.0,
+                    n_days=0,
+                )
+                continue
+
+            # Fetch ERA5 reanalysis
+            console.print(f"    Fetching ERA5 reanalysis...", end="")
+            lat, lon = stn.lat_lon
+            om_obs = await fetch_openmeteo_history(
+                lat, lon, start, end, timezone=stn.timezone,
+            )
+            console.print(f" {len(om_obs)} days")
+
+            if not om_obs:
+                console.print("    [yellow]No ERA5 data, skipping[/yellow]")
+                results[wu_id] = StationBias(
+                    station_id=wu_id, city=stn.city,
+                    high_bias_c=0.0, low_bias_c=0.0, mean_bias_c=0.0,
+                    n_days=0,
+                )
+                continue
+
+            # Match days present in both datasets
+            om_by_date = {o.obs_date: o for o in om_obs}
+            wu_highs, wu_lows, om_maxs, om_mins = [], [], [], []
+
+            for wu in wu_obs:
+                om = om_by_date.get(wu.date)
+                if om is not None:
+                    wu_highs.append(wu.high_temp_c)
+                    wu_lows.append(wu.low_temp_c)
+                    om_maxs.append(om.max_temp_c)
+                    om_mins.append(om.min_temp_c)
+
+            if not wu_highs:
+                console.print("    [yellow]No matching days, skipping[/yellow]")
+                results[wu_id] = StationBias(
+                    station_id=wu_id, city=stn.city,
+                    high_bias_c=0.0, low_bias_c=0.0, mean_bias_c=0.0,
+                    n_days=0,
+                )
+                continue
+
+            bias = compute_station_bias(
+                wu_highs, wu_lows, om_maxs, om_mins,
+                station_id=wu_id, city=stn.city,
+            )
+            results[wu_id] = bias
+            console.print(
+                f"    Bias: high={bias.high_bias_c:+.2f}C, "
+                f"low={bias.low_bias_c:+.2f}C, "
+                f"mean={bias.mean_bias_c:+.2f}C "
+                f"(n={bias.n_days})"
+            )
+
+        # Save results
+        path = save_biases(results, training_days=days)
+        console.print(f"\n[bold green]Saved biases to {path}[/bold green]")
+
+        # Display summary table
+        table = Table(title="Station Bias Summary", show_lines=True)
+        table.add_column("Station", width=16)
+        table.add_column("City", width=14)
+        table.add_column("High Bias", justify="right", width=10)
+        table.add_column("Low Bias", justify="right", width=10)
+        table.add_column("Mean Bias", justify="right", width=10)
+        table.add_column("Std (H/L)", justify="right", width=12)
+        table.add_column("Days", justify="right", width=6)
+
+        for wu_id, b in results.items():
+            table.add_row(
+                wu_id,
+                b.city,
+                f"{b.high_bias_c:+.2f}C",
+                f"{b.low_bias_c:+.2f}C",
+                f"{b.mean_bias_c:+.2f}C",
+                f"{b.high_std_c:.2f}/{b.low_std_c:.2f}",
+                str(b.n_days),
+            )
+
+        console.print(table)
+
+    asyncio.run(_run())
+
+
 if __name__ == "__main__":
     app()

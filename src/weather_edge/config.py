@@ -65,6 +65,10 @@ class Settings(BaseSettings):
     # Max concurrent API requests
     max_concurrency: int = 10
 
+    # Station bias correction
+    station_bias_enabled: bool = True
+    station_bias_path: Path = Path.home() / ".weather-edge" / "station_biases.json"
+
     # Telegram notifications
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
@@ -93,6 +97,12 @@ class Settings(BaseSettings):
         return v
 
 
+_settings_cache: Settings | None = None
+
+
 def get_settings() -> Settings:
     """Get cached settings instance."""
-    return Settings()
+    global _settings_cache
+    if _settings_cache is None:
+        _settings_cache = Settings()
+    return _settings_cache
