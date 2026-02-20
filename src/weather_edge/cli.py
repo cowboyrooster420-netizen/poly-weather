@@ -301,12 +301,12 @@ def calibrate(
 
     async def _run() -> None:
         from weather_edge.calibration.openmeteo_history import (
-            fetch_openmeteo_history,
+            fetch_openmeteo_history_v2,
             training_window,
         )
         from weather_edge.calibration.station_bias import (
-            StationBias,
-            compute_station_bias,
+            StationBiasV2,
+            compute_station_bias_stratified,
             save_biases,
         )
         from weather_edge.weather.stations import STATIONS
@@ -328,7 +328,7 @@ def calibrate(
         else:
             targets = STATIONS
 
-        results: dict[str, StationBias] = {}
+        results: dict[str, StationBiasV2] = {}
 
         for wu_id, stn in targets.items():
             console.print(f"\n  [bold]{wu_id}[/bold] ({stn.city})")
@@ -340,24 +340,24 @@ def calibrate(
 
             if not wu_obs:
                 console.print("    [yellow]No WU data, skipping[/yellow]")
-                results[wu_id] = StationBias(
+                results[wu_id] = StationBiasV2(
                     station_id=wu_id, city=stn.city,
                     high_bias_c=0.0, low_bias_c=0.0, mean_bias_c=0.0,
                     n_days=0,
                 )
                 continue
 
-            # Fetch ERA5 reanalysis
+            # Fetch ERA5 reanalysis (v2 with cloud cover)
             console.print(f"    Fetching ERA5 reanalysis...", end="")
             lat, lon = stn.lat_lon
-            om_obs = await fetch_openmeteo_history(
+            om_obs = await fetch_openmeteo_history_v2(
                 lat, lon, start, end, timezone=stn.timezone,
             )
             console.print(f" {len(om_obs)} days")
 
             if not om_obs:
                 console.print("    [yellow]No ERA5 data, skipping[/yellow]")
-                results[wu_id] = StationBias(
+                results[wu_id] = StationBiasV2(
                     station_id=wu_id, city=stn.city,
                     high_bias_c=0.0, low_bias_c=0.0, mean_bias_c=0.0,
                     n_days=0,
@@ -366,7 +366,11 @@ def calibrate(
 
             # Match days present in both datasets
             om_by_date = {o.obs_date: o for o in om_obs}
-            wu_highs, wu_lows, om_maxs, om_mins = [], [], [], []
+            wu_highs: list[float] = []
+            wu_lows: list[float] = []
+            om_maxs: list[float] = []
+            om_mins: list[float] = []
+            cloud_covers: list[float | None] = []
 
             for wu in wu_obs:
                 om = om_by_date.get(wu.date)
@@ -375,18 +379,19 @@ def calibrate(
                     wu_lows.append(wu.low_temp_c)
                     om_maxs.append(om.max_temp_c)
                     om_mins.append(om.min_temp_c)
+                    cloud_covers.append(om.cloud_cover_mean)
 
             if not wu_highs:
                 console.print("    [yellow]No matching days, skipping[/yellow]")
-                results[wu_id] = StationBias(
+                results[wu_id] = StationBiasV2(
                     station_id=wu_id, city=stn.city,
                     high_bias_c=0.0, low_bias_c=0.0, mean_bias_c=0.0,
                     n_days=0,
                 )
                 continue
 
-            bias = compute_station_bias(
-                wu_highs, wu_lows, om_maxs, om_mins,
+            bias = compute_station_bias_stratified(
+                wu_highs, wu_lows, om_maxs, om_mins, cloud_covers,
                 station_id=wu_id, city=stn.city,
             )
             results[wu_id] = bias
@@ -396,6 +401,15 @@ def calibrate(
                 f"mean={bias.mean_bias_c:+.2f}C "
                 f"(n={bias.n_days})"
             )
+            # Show per-condition breakdown
+            for cb in bias.condition_biases:
+                if cb.n_days > 0:
+                    console.print(
+                        f"      {cb.condition.value:>8}: "
+                        f"high={cb.high_bias_c:+.2f}C, "
+                        f"low={cb.low_bias_c:+.2f}C "
+                        f"(n={cb.n_days})"
+                    )
 
         # Save results
         path = save_biases(results, training_days=days)
@@ -410,8 +424,19 @@ def calibrate(
         table.add_column("Mean Bias", justify="right", width=10)
         table.add_column("Std (H/L)", justify="right", width=12)
         table.add_column("Days", justify="right", width=6)
+        table.add_column("Clear", justify="right", width=12)
+        table.add_column("Partly", justify="right", width=12)
+        table.add_column("Overcast", justify="right", width=12)
 
         for wu_id, b in results.items():
+            # Format per-condition high bias summaries
+            cond_strs: dict[str, str] = {}
+            for cb in b.condition_biases:
+                if cb.n_days > 0:
+                    cond_strs[cb.condition.value] = f"{cb.high_bias_c:+.1f} ({cb.n_days}d)"
+                else:
+                    cond_strs[cb.condition.value] = "-"
+
             table.add_row(
                 wu_id,
                 b.city,
@@ -420,6 +445,9 @@ def calibrate(
                 f"{b.mean_bias_c:+.2f}C",
                 f"{b.high_std_c:.2f}/{b.low_std_c:.2f}",
                 str(b.n_days),
+                cond_strs.get("clear", "-"),
+                cond_strs.get("partly", "-"),
+                cond_strs.get("overcast", "-"),
             )
 
         console.print(table)

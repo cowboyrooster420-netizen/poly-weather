@@ -19,7 +19,7 @@ from weather_edge.forecasting.calibration import (
     confidence_from_lead_time,
     inflate_ensemble_spread,
 )
-from weather_edge.calibration.station_bias import get_station_bias
+from weather_edge.calibration.station_bias import get_station_bias_for_condition
 from weather_edge.common.types import celsius_to_fahrenheit, fahrenheit_to_celsius
 from weather_edge.forecasting.utils import find_closest_time_idx, find_period_time_indices
 from weather_edge.markets.models import Comparison, MarketParams
@@ -277,20 +277,70 @@ def _apply_hrrr_correction(
     return corrected, detail
 
 
+def _get_forecast_cloud_cover(
+    forecast: EnsembleForecast,
+    target_date: datetime,
+    tz_name: str | None = None,
+    daily_aggregation: str | None = None,
+) -> float | None:
+    """Average cloud cover across ensemble members for the target day.
+
+    For daily-high ("max") markets, restricts to daytime hours (10:00-18:00
+    local) since radiation bias — the dominant source of station error on
+    clear days — peaks during daylight.  For "min" or point-in-time markets,
+    uses the full 24-hour window.
+
+    Returns mean cloud cover percentage (0-100) or None if unavailable.
+    """
+    if forecast.cloud_cover is None:
+        return None
+
+    if tz_name is not None:
+        tz = ZoneInfo(tz_name)
+    else:
+        tz = timezone.utc
+
+    local_midnight = target_date.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=tz)
+
+    if daily_aggregation == "max":
+        # Daytime hours only — radiation bias is a daytime phenomenon
+        day_start = local_midnight.replace(hour=10).astimezone(timezone.utc)
+        day_end = local_midnight.replace(hour=18).astimezone(timezone.utc) - timedelta(seconds=1)
+    else:
+        day_start = local_midnight.astimezone(timezone.utc)
+        day_end = day_start + timedelta(hours=24) - timedelta(seconds=1)
+
+    indices = find_period_time_indices(forecast.times, day_start, day_end)
+    if not indices:
+        # Fall back to full day if daytime window yielded nothing
+        day_start = local_midnight.astimezone(timezone.utc)
+        day_end = day_start + timedelta(hours=24) - timedelta(seconds=1)
+        indices = find_period_time_indices(forecast.times, day_start, day_end)
+        if not indices:
+            return None
+
+    cloud_slice = forecast.cloud_cover[indices, :]
+    valid = cloud_slice[~np.isnan(cloud_slice)]
+    if len(valid) == 0:
+        return None
+    return float(np.mean(valid))
+
+
 def _apply_station_bias_correction(
     members: np.ndarray,
     station_id: str,
     daily_aggregation: str | None,
+    cloud_cover_pct: float | None = None,
 ) -> tuple[np.ndarray, str | None]:
     """Shift ensemble members by the station's learned bias.
 
     Preserves spread — only moves the center, identical to HRRR correction
-    mechanism.
+    mechanism. Uses condition-dependent bias when cloud_cover_pct is available.
 
     Returns:
         (corrected_members, detail_string_or_None)
     """
-    bias = get_station_bias(station_id, daily_aggregation)
+    bias = get_station_bias_for_condition(station_id, daily_aggregation, cloud_cover_pct)
     if abs(bias) < 0.01:
         return members, None
     corrected = members + bias
@@ -376,6 +426,18 @@ class TemperatureModel:
         hrrr_applied = False
         station_bias_applied = False
 
+        # Compute forecast cloud cover for condition-dependent bias.
+        # For daily-high markets, restrict to daytime hours where radiation
+        # bias actually manifests; averaging 2am cloud cover dilutes the signal.
+        cloud_cover_pct: float | None = None
+        for fc in (ecmwf, gfs):
+            if fc is not None and fc.cloud_cover is not None:
+                cloud_cover_pct = _get_forecast_cloud_cover(
+                    fc, target_time, station_tz, params.daily_aggregation,
+                )
+                if cloud_cover_pct is not None:
+                    break
+
         # ECMWF ensemble
         if ecmwf is not None and ecmwf.n_members > 0:
             members = None
@@ -401,7 +463,7 @@ class TemperatureModel:
                 # Station bias correction (after HRRR, before CDF)
                 if station_id is not None:
                     members, sb_detail = _apply_station_bias_correction(
-                        members, station_id, params.daily_aggregation,
+                        members, station_id, params.daily_aggregation, cloud_cover_pct,
                     )
                     if sb_detail is not None and not station_bias_applied:
                         details_parts.append(sb_detail)
@@ -442,7 +504,7 @@ class TemperatureModel:
                 # Station bias correction (after HRRR, before CDF)
                 if station_id is not None:
                     members, sb_detail = _apply_station_bias_correction(
-                        members, station_id, params.daily_aggregation,
+                        members, station_id, params.daily_aggregation, cloud_cover_pct,
                     )
                     if sb_detail is not None and not station_bias_applied:
                         details_parts.append(sb_detail)

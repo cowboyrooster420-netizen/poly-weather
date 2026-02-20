@@ -44,7 +44,7 @@ async def fetch_ensemble(
     params = {
         "latitude": lat,
         "longitude": lon,
-        "hourly": "temperature_2m,precipitation",
+        "hourly": "temperature_2m,precipitation,cloud_cover",
         "models": model,
         "timeformat": "unixtime",
     }
@@ -61,12 +61,15 @@ async def fetch_ensemble(
     # Parse ensemble members — Open-Meteo returns temperature_2m_member01, etc.
     temp_members = []
     precip_members = []
+    cloud_members = []
 
     for key, values in hourly.items():
         if key.startswith("temperature_2m_member"):
             temp_members.append(values)
         elif key.startswith("precipitation_member"):
             precip_members.append(values)
+        elif key.startswith("cloud_cover_member"):
+            cloud_members.append(values)
 
     # Shape: (n_times, n_members). np.array with float64 converts None → NaN.
     def _to_array(member_lists: list[list]) -> np.ndarray:
@@ -86,6 +89,7 @@ async def fetch_ensemble(
 
     temp_array = _to_array(temp_members) if temp_members else np.empty((len(times), 0))
     precip_array = _to_array(precip_members) if precip_members else np.empty((len(times), 0))
+    cloud_array = _to_array(cloud_members) if cloud_members else None
 
     return EnsembleForecast(
         source=source,
@@ -94,6 +98,7 @@ async def fetch_ensemble(
         times=times,
         temperature_2m=temp_array,
         precipitation=precip_array,
+        cloud_cover=cloud_array,
     )
 
 

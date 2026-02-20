@@ -21,6 +21,7 @@ class EnsembleForecast:
         temperature_2m: (n_times, n_members) temperature in Celsius
         precipitation: (n_times, n_members) precipitation in mm
         wind_speed_10m: (n_times, n_members) wind speed in km/h (if available)
+        cloud_cover: (n_times, n_members) cloud cover in % (if available)
     """
 
     source: str
@@ -30,6 +31,7 @@ class EnsembleForecast:
     temperature_2m: NDArray[np.float64]
     precipitation: NDArray[np.float64]
     wind_speed_10m: NDArray[np.float64] | None = None
+    cloud_cover: NDArray[np.float64] | None = None
 
     @property
     def n_members(self) -> int:

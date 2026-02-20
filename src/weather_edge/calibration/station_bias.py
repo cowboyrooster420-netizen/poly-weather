@@ -18,6 +18,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 
 import numpy as np
@@ -44,12 +45,77 @@ class StationBias:
     n_days: int = 0
 
 
+class SkyCondition(Enum):
+    """Cloud cover classification buckets."""
+
+    CLEAR = "clear"
+    PARTLY_CLOUDY = "partly"
+    OVERCAST = "overcast"
+
+
+@dataclass(frozen=True)
+class ConditionBias:
+    """Bias statistics for a single sky-condition bucket."""
+
+    condition: SkyCondition
+    high_bias_c: float
+    low_bias_c: float
+    mean_bias_c: float
+    high_std_c: float = 0.0
+    low_std_c: float = 0.0
+    n_days: int = 0
+
+
+@dataclass(frozen=True)
+class StationBiasV2:
+    """Bias statistics with per-condition stratification."""
+
+    station_id: str
+    city: str
+    high_bias_c: float
+    low_bias_c: float
+    mean_bias_c: float
+    high_std_c: float = 0.0
+    low_std_c: float = 0.0
+    n_days: int = 0
+    condition_biases: tuple[ConditionBias, ...] = ()
+
+
+# Minimum days in a bucket before we trust its bias estimate.
+_MIN_BUCKET_DAYS = 10
+
+
+def classify_sky_condition(cloud_cover_pct: float) -> SkyCondition:
+    """Classify cloud cover percentage into a sky-condition bucket.
+
+    - Clear: cloud_cover < 25%
+    - Partly cloudy: 25% <= cloud_cover < 75%
+    - Overcast: cloud_cover >= 75%
+    """
+    if cloud_cover_pct < 25.0:
+        return SkyCondition.CLEAR
+    elif cloud_cover_pct < 75.0:
+        return SkyCondition.PARTLY_CLOUDY
+    else:
+        return SkyCondition.OVERCAST
+
+
 # Module-level cache so we only load from disk once.
-_cache: dict[str, StationBias] | None = None
+_cache: dict[str, StationBiasV2] | None = None
+
+_CONDITION_KEY_MAP = {
+    "clear": SkyCondition.CLEAR,
+    "partly": SkyCondition.PARTLY_CLOUDY,
+    "overcast": SkyCondition.OVERCAST,
+}
 
 
-def _load_biases() -> dict[str, StationBias]:
-    """Load biases from user file, falling back to bundled defaults."""
+def _load_biases() -> dict[str, StationBiasV2]:
+    """Load biases from user file, falling back to bundled defaults.
+
+    Handles both v1 (no conditions) and v2 (with conditions) JSON.
+    v1 files are loaded with empty condition_biases.
+    """
     settings = get_settings()
     user_path = settings.station_bias_path
 
@@ -68,9 +134,26 @@ def _load_biases() -> dict[str, StationBias]:
         logger.warning("Failed to read station bias file %s: %s", path, exc)
         return {}
 
-    biases: dict[str, StationBias] = {}
+    biases: dict[str, StationBiasV2] = {}
     for station_id, info in data.get("stations", {}).items():
-        biases[station_id] = StationBias(
+        # Parse condition biases if present (v2)
+        condition_biases: list[ConditionBias] = []
+        conditions_data = info.get("conditions", {})
+        for key, cond_info in conditions_data.items():
+            sky_cond = _CONDITION_KEY_MAP.get(key)
+            if sky_cond is None:
+                continue
+            condition_biases.append(ConditionBias(
+                condition=sky_cond,
+                high_bias_c=cond_info.get("high_bias_c", 0.0),
+                low_bias_c=cond_info.get("low_bias_c", 0.0),
+                mean_bias_c=cond_info.get("mean_bias_c", 0.0),
+                high_std_c=cond_info.get("high_std_c", 0.0),
+                low_std_c=cond_info.get("low_std_c", 0.0),
+                n_days=cond_info.get("n_days", 0),
+            ))
+
+        biases[station_id] = StationBiasV2(
             station_id=station_id,
             city=info.get("city", ""),
             high_bias_c=info.get("high_bias_c", 0.0),
@@ -79,6 +162,7 @@ def _load_biases() -> dict[str, StationBias]:
             high_std_c=info.get("high_std_c", 0.0),
             low_std_c=info.get("low_std_c", 0.0),
             n_days=info.get("n_days", 0),
+            condition_biases=tuple(condition_biases),
         )
 
     source = "user" if path == user_path else "bundled"
@@ -86,7 +170,7 @@ def _load_biases() -> dict[str, StationBias]:
     return biases
 
 
-def load_biases(*, force: bool = False) -> dict[str, StationBias]:
+def load_biases(*, force: bool = False) -> dict[str, StationBiasV2]:
     """Return cached station biases, loading from disk on first call."""
     global _cache
     if _cache is None or force:
@@ -123,7 +207,49 @@ def get_station_bias(station_id: str, aggregation: str | None) -> float:
         return bias.mean_bias_c
 
 
-def save_biases(biases: dict[str, StationBias], *, training_days: int = 90) -> Path:
+def get_station_bias_for_condition(
+    station_id: str,
+    aggregation: str | None,
+    cloud_cover_pct: float | None = None,
+) -> float:
+    """Return condition-dependent bias offset in °C.
+
+    Fallback chain:
+        condition bias (bucket n_days >= _MIN_BUCKET_DAYS)
+        → global bias (station found)
+        → 0.0 (station unknown or bias disabled)
+    """
+    settings = get_settings()
+    if not settings.station_bias_enabled:
+        return 0.0
+
+    biases = load_biases()
+    bias = biases.get(station_id)
+    if bias is None:
+        return 0.0
+
+    # Try condition-specific bias if cloud cover is provided
+    if cloud_cover_pct is not None and bias.condition_biases:
+        condition = classify_sky_condition(cloud_cover_pct)
+        for cb in bias.condition_biases:
+            if cb.condition == condition and cb.n_days >= _MIN_BUCKET_DAYS:
+                if aggregation == "max":
+                    return cb.high_bias_c
+                elif aggregation == "min":
+                    return cb.low_bias_c
+                else:
+                    return cb.mean_bias_c
+
+    # Fall back to global bias
+    if aggregation == "max":
+        return bias.high_bias_c
+    elif aggregation == "min":
+        return bias.low_bias_c
+    else:
+        return bias.mean_bias_c
+
+
+def save_biases(biases: dict[str, StationBiasV2], *, training_days: int = 90) -> Path:
     """Persist biases to the user's station_bias_path.
 
     Returns the path written to.
@@ -132,22 +258,36 @@ def save_biases(biases: dict[str, StationBias], *, training_days: int = 90) -> P
     path = settings.station_bias_path
     path.parent.mkdir(parents=True, exist_ok=True)
 
+    stations_data: dict[str, dict] = {}
+    for sid, b in biases.items():
+        station_entry: dict = {
+            "city": b.city,
+            "high_bias_c": round(b.high_bias_c, 3),
+            "low_bias_c": round(b.low_bias_c, 3),
+            "mean_bias_c": round(b.mean_bias_c, 3),
+            "high_std_c": round(b.high_std_c, 3),
+            "low_std_c": round(b.low_std_c, 3),
+            "n_days": b.n_days,
+        }
+        if b.condition_biases:
+            conditions: dict[str, dict] = {}
+            for cb in b.condition_biases:
+                conditions[cb.condition.value] = {
+                    "high_bias_c": round(cb.high_bias_c, 3),
+                    "low_bias_c": round(cb.low_bias_c, 3),
+                    "mean_bias_c": round(cb.mean_bias_c, 3),
+                    "high_std_c": round(cb.high_std_c, 3),
+                    "low_std_c": round(cb.low_std_c, 3),
+                    "n_days": cb.n_days,
+                }
+            station_entry["conditions"] = conditions
+        stations_data[sid] = station_entry
+
     data = {
-        "version": 1,
+        "version": 2,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "training_days": training_days,
-        "stations": {
-            sid: {
-                "city": b.city,
-                "high_bias_c": round(b.high_bias_c, 3),
-                "low_bias_c": round(b.low_bias_c, 3),
-                "mean_bias_c": round(b.mean_bias_c, 3),
-                "high_std_c": round(b.high_std_c, 3),
-                "low_std_c": round(b.low_std_c, 3),
-                "n_days": b.n_days,
-            }
-            for sid, b in biases.items()
-        },
+        "stations": stations_data,
     }
 
     path.write_text(json.dumps(data, indent=2) + "\n")
@@ -205,4 +345,94 @@ def compute_station_bias(
         high_std_c=high_std,
         low_std_c=low_std,
         n_days=n_days,
+    )
+
+
+def _compute_bucket_bias(
+    wu_highs: list[float],
+    wu_lows: list[float],
+    om_maxs: list[float],
+    om_mins: list[float],
+    condition: SkyCondition,
+) -> ConditionBias:
+    """Compute bias for a single sky-condition bucket."""
+    if not wu_highs:
+        return ConditionBias(condition=condition, high_bias_c=0.0, low_bias_c=0.0, mean_bias_c=0.0)
+
+    high_diffs = np.array(wu_highs) - np.array(om_maxs)
+    low_diffs = np.array(wu_lows) - np.array(om_mins)
+
+    high_bias = float(np.mean(high_diffs))
+    low_bias = float(np.mean(low_diffs))
+    mean_bias = (high_bias + low_bias) / 2.0
+
+    high_std = float(np.std(high_diffs, ddof=1)) if len(high_diffs) > 1 else 0.0
+    low_std = float(np.std(low_diffs, ddof=1)) if len(low_diffs) > 1 else 0.0
+
+    return ConditionBias(
+        condition=condition,
+        high_bias_c=high_bias,
+        low_bias_c=low_bias,
+        mean_bias_c=mean_bias,
+        high_std_c=high_std,
+        low_std_c=low_std,
+        n_days=len(wu_highs),
+    )
+
+
+def compute_station_bias_stratified(
+    wu_highs: list[float],
+    wu_lows: list[float],
+    om_maxs: list[float],
+    om_mins: list[float],
+    cloud_covers: list[float | None],
+    station_id: str = "",
+    city: str = "",
+) -> StationBiasV2:
+    """Compute bias statistics stratified by sky condition.
+
+    All inputs are paired lists of the same length. cloud_covers
+    contains daily mean cloud cover percentage (0-100), or None
+    for days where cloud cover data is unavailable.
+    """
+    n = len(wu_highs)
+    if len(wu_lows) != n or len(om_maxs) != n or len(om_mins) != n or len(cloud_covers) != n:
+        raise ValueError("All input lists must have the same length")
+
+    # Compute global bias
+    global_bias = compute_station_bias(wu_highs, wu_lows, om_maxs, om_mins, station_id, city)
+
+    # Stratify by sky condition
+    buckets: dict[SkyCondition, tuple[list[float], list[float], list[float], list[float]]] = {
+        SkyCondition.CLEAR: ([], [], [], []),
+        SkyCondition.PARTLY_CLOUDY: ([], [], [], []),
+        SkyCondition.OVERCAST: ([], [], [], []),
+    }
+
+    for i in range(n):
+        cc = cloud_covers[i]
+        if cc is None:
+            continue
+        condition = classify_sky_condition(cc)
+        bh, bl, bm, bn = buckets[condition]
+        bh.append(wu_highs[i])
+        bl.append(wu_lows[i])
+        bm.append(om_maxs[i])
+        bn.append(om_mins[i])
+
+    condition_biases: list[ConditionBias] = []
+    for condition in SkyCondition:
+        bh, bl, bm, bn = buckets[condition]
+        condition_biases.append(_compute_bucket_bias(bh, bl, bm, bn, condition))
+
+    return StationBiasV2(
+        station_id=station_id,
+        city=city,
+        high_bias_c=global_bias.high_bias_c,
+        low_bias_c=global_bias.low_bias_c,
+        mean_bias_c=global_bias.mean_bias_c,
+        high_std_c=global_bias.high_std_c,
+        low_std_c=global_bias.low_std_c,
+        n_days=global_bias.n_days,
+        condition_biases=tuple(condition_biases),
     )
