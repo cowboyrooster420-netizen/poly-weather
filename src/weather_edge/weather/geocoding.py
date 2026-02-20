@@ -13,43 +13,43 @@ from weather_edge.common.types import LatLon
 
 logger = logging.getLogger(__name__)
 
-# Weather station coordinates for Polymarket cities.
-# These match the airport/NWS stations where markets resolve.
+# Weather Underground PWS coordinates for Polymarket cities.
+# Markets resolve on these specific personal weather stations, NOT airport ASOS.
 _STATION_COORDS: dict[str, LatLon] = {
-    "atlanta":       (33.6407, -84.4277),   # KATL
-    "atlanta, ga":   (33.6407, -84.4277),
-    "new york":      (40.7769, -73.8740),   # KLGA
-    "new york city":  (40.7769, -73.8740),
-    "new york, ny":  (40.7769, -73.8740),
-    "nyc":           (40.7769, -73.8740),
-    "dallas":        (32.8471, -96.8517),   # KDAL
-    "dallas, tx":    (32.8471, -96.8517),
-    "miami":         (25.7959, -80.2870),   # KMIA
-    "miami, fl":     (25.7959, -80.2870),
-    "chicago":       (41.9742, -87.9073),   # KORD
-    "chicago, il":   (41.9742, -87.9073),
-    "seattle":       (47.4502, -122.3088),  # KSEA
-    "seattle, wa":   (47.4502, -122.3088),
-    "toronto":       (43.6777, -79.6248),   # CYYZ
-    "toronto, on":   (43.6777, -79.6248),
-    "london":        (51.5053, 0.0553),     # EGLC
-    "london, uk":    (51.5053, 0.0553),
-    "paris":         (49.0097, 2.5479),     # LFPG
-    "paris, fr":     (49.0097, 2.5479),
-    "buenos aires":  (-34.8222, -58.5358),  # SAEZ
-    "buenos aires, ar": (-34.8222, -58.5358),
-    "sao paulo":     (-23.4356, -46.4731),  # SBGR
-    "são paulo":     (-23.4356, -46.4731),
-    "sao paulo, br": (-23.4356, -46.4731),
-    "são paulo, br": (-23.4356, -46.4731),
-    "wellington":    (-41.3272, 174.8053),  # NZWN
-    "wellington, nz": (-41.3272, 174.8053),
-    "incheon":       (37.4602, 126.4407),   # RKSI
-    "incheon, kr":   (37.4602, 126.4407),
-    "seoul":         (37.4602, 126.4407),   # resolves at Incheon
-    "seoul, kr":     (37.4602, 126.4407),
-    "ankara":        (40.1283, 32.9958),    # LTAC
-    "ankara, tr":    (40.1283, 32.9958),
+    "atlanta":       (33.661, -84.399),     # KGAHAPEV1 (Hapeville)
+    "atlanta, ga":   (33.661, -84.399),
+    "new york":      (40.764, -73.835),     # KNYNEWYO1974 (Queens)
+    "new york city":  (40.764, -73.835),
+    "new york, ny":  (40.764, -73.835),
+    "nyc":           (40.764, -73.835),
+    "dallas":        (32.829, -96.878),     # KTXDALLA1276
+    "dallas, tx":    (32.829, -96.878),
+    "miami":         (25.857, -80.265),     # KFLHIALE117 (Hialeah)
+    "miami, fl":     (25.857, -80.265),
+    "chicago":       (41.964, -87.946),     # KILBENSE15 (Bensenville)
+    "chicago, il":   (41.964, -87.946),
+    "seattle":       (47.446, -122.276),    # KWASEATA17 (SeaTac)
+    "seattle, wa":   (47.446, -122.276),
+    "toronto":       (43.733, -79.637),     # IMISSI113 (Mississauga)
+    "toronto, on":   (43.733, -79.637),
+    "london":        (51.514, 0.037),       # ILONDO288 (Greenwich)
+    "london, uk":    (51.514, 0.037),
+    "paris":         (48.974, 2.632),       # IMITRY1 (Mitry-Mory)
+    "paris, fr":     (48.974, 2.632),
+    "buenos aires":  (-34.817, -58.467),    # IMONTEGR27 (Monte Grande)
+    "buenos aires, ar": (-34.817, -58.467),
+    "sao paulo":     (-23.448, -46.526),    # IGUARU12 (Guarulhos)
+    "são paulo":     (-23.448, -46.526),
+    "sao paulo, br": (-23.448, -46.526),
+    "são paulo, br": (-23.448, -46.526),
+    "wellington":    (-41.325, 174.792),    # IWGNLYAL3 (Lyall Bay)
+    "wellington, nz": (-41.325, 174.792),
+    "incheon":       (37.482, 126.523),     # IINCHE10
+    "incheon, kr":   (37.482, 126.523),
+    "seoul":         (37.482, 126.523),     # resolves at Incheon
+    "seoul, kr":     (37.482, 126.523),
+    "ankara":        (39.931, 32.899),      # IANKAR46
+    "ankara, tr":    (39.931, 32.899),
 }
 
 # Bounded LRU cache for geocoding results (oldest evicted first)
