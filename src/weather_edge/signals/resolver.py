@@ -77,15 +77,8 @@ async def resolve_pending_signals() -> list[dict]:
         closed_time = raw.get("closedTime") or raw.get("endDate")
         await tracker.backfill_outcome(market_id, outcome, closed_time)
 
-        # Determine if our direction was correct by querying a signal row
-        import aiosqlite
-        async with aiosqlite.connect(str(tracker._db_path)) as db:
-            cursor = await db.execute(
-                "SELECT direction FROM signals WHERE market_id = ? LIMIT 1",
-                (market_id,),
-            )
-            row = await cursor.fetchone()
-            direction = row[0] if row else None
+        # Determine if our direction was correct
+        direction = await tracker.get_signal_direction(market_id)
 
         correct = None
         if direction is not None:

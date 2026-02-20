@@ -28,8 +28,8 @@ def tracker(tmp_db):
     with patch("weather_edge.signals.tracker.get_settings") as mock_settings:
         settings = mock_settings.return_value
         settings.db_path = tmp_db
+        settings.database_url = ""
         t = SignalTracker()
-        t._db_path = tmp_db
         yield t
 
 
@@ -174,8 +174,10 @@ async def test_db_created_on_first_use(tmp_db):
     """Test that the database file is created on first use."""
     assert not tmp_db.exists()
 
-    tracker = SignalTracker()
-    tracker._db_path = tmp_db
+    with patch("weather_edge.signals.tracker.get_settings") as mock_settings:
+        mock_settings.return_value.db_path = tmp_db
+        mock_settings.return_value.database_url = ""
+        tracker = SignalTracker()
     signal = _make_signal()
     await tracker.log_signal(signal)
 
@@ -187,8 +189,10 @@ async def test_db_parent_dirs_created(tmp_db):
     """Test that parent directories are created if needed."""
     deep_path = tmp_db.parent / "subdir" / "deep" / "signals.db"
 
-    tracker = SignalTracker()
-    tracker._db_path = deep_path
+    with patch("weather_edge.signals.tracker.get_settings") as mock_settings:
+        mock_settings.return_value.db_path = deep_path
+        mock_settings.return_value.database_url = ""
+        tracker = SignalTracker()
     signal = _make_signal()
     await tracker.log_signal(signal)
 

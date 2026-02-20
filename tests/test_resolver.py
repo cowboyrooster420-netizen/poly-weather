@@ -41,8 +41,8 @@ def tracker():
         with patch("weather_edge.signals.tracker.get_settings") as mock_settings:
             settings = mock_settings.return_value
             settings.db_path = db_path
+            settings.database_url = ""
             t = SignalTracker()
-            t._db_path = db_path
             yield t
 
 

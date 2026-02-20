@@ -10,3 +10,4 @@ pandas>=2.1
 geopy[aiohttp]>=2.4
 tenacity>=8.2
 aiosqlite>=0.20
+asyncpg>=0.29

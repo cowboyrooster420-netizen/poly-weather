@@ -1,13 +1,15 @@
-"""SQLite historical signal and outcome logger."""
+"""Historical signal and outcome logger with PostgreSQL and SQLite backends."""
 
 from __future__ import annotations
+
+import asyncio
 
 import aiosqlite
 
 from weather_edge.config import get_settings
 from weather_edge.signals.models import Signal
 
-_CREATE_TABLE = """
+_SQLITE_CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS signals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     market_id TEXT NOT NULL,
@@ -29,55 +31,121 @@ CREATE TABLE IF NOT EXISTS signals (
 );
 """
 
+_PG_CREATE_TABLE = """
+CREATE TABLE IF NOT EXISTS signals (
+    id SERIAL PRIMARY KEY,
+    market_id TEXT NOT NULL,
+    question TEXT,
+    market_type TEXT,
+    location TEXT,
+    model_prob DOUBLE PRECISION NOT NULL,
+    market_prob DOUBLE PRECISION NOT NULL,
+    edge DOUBLE PRECISION NOT NULL,
+    kelly_fraction DOUBLE PRECISION,
+    confidence DOUBLE PRECISION,
+    direction TEXT,
+    lead_time_hours DOUBLE PRECISION,
+    sources TEXT,
+    details TEXT,
+    timestamp TEXT NOT NULL,
+    outcome INTEGER,  -- NULL until resolved, 1 = YES won, 0 = NO won
+    resolved_at TEXT
+);
+"""
+
 _CREATE_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_signals_market_id ON signals(market_id);
 """
 
 
 class SignalTracker:
-    """SQLite-backed signal tracker for calibration training data."""
+    """Signal tracker with PostgreSQL (via asyncpg) or SQLite (via aiosqlite) backend."""
 
     def __init__(self) -> None:
-        self._db_path = get_settings().db_path
+        settings = get_settings()
+        self._database_url = settings.database_url
+        self._use_pg = bool(self._database_url)
+        self._db_path = settings.db_path
+        self._pool = None  # asyncpg pool, created lazily
+        self._pool_lock = asyncio.Lock()
+
+    async def _get_pool(self):
+        """Get or create the asyncpg connection pool."""
+        if self._pool is None:
+            async with self._pool_lock:
+                if self._pool is None:
+                    import asyncpg
+                    self._pool = await asyncpg.create_pool(
+                        self._database_url, min_size=1, max_size=5,
+                    )
+        return self._pool
+
+    async def close(self) -> None:
+        """Close the connection pool, if open."""
+        if self._pool is not None:
+            await self._pool.close()
+            self._pool = None
 
     async def _ensure_db(self) -> None:
         """Create database and tables if they don't exist."""
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        async with aiosqlite.connect(str(self._db_path)) as db:
-            await db.execute(_CREATE_TABLE)
-            await db.execute(_CREATE_INDEX)
-            await db.commit()
+        if self._use_pg:
+            pool = await self._get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(_PG_CREATE_TABLE)
+                await conn.execute(_CREATE_INDEX)
+        else:
+            self._db_path.parent.mkdir(parents=True, exist_ok=True)
+            async with aiosqlite.connect(str(self._db_path)) as db:
+                await db.execute(_SQLITE_CREATE_TABLE)
+                await db.execute(_CREATE_INDEX)
+                await db.commit()
 
     async def log_signal(self, signal: Signal) -> int:
         """Log a signal to the database. Returns the row ID."""
         await self._ensure_db()
-        async with aiosqlite.connect(str(self._db_path)) as db:
-            cursor = await db.execute(
-                """INSERT INTO signals
-                   (market_id, question, market_type, location,
-                    model_prob, market_prob, edge, kelly_fraction,
-                    confidence, direction, lead_time_hours,
-                    sources, details, timestamp)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    signal.market_id,
-                    signal.question,
-                    signal.market_type,
-                    signal.location,
-                    signal.model_prob,
-                    signal.market_prob,
-                    signal.edge,
-                    signal.kelly_fraction,
-                    signal.confidence,
-                    signal.direction,
-                    signal.lead_time_hours,
-                    ",".join(signal.sources),
-                    signal.details,
-                    signal.timestamp.isoformat(),
-                ),
-            )
-            await db.commit()
-            return cursor.lastrowid
+        params = (
+            signal.market_id,
+            signal.question,
+            signal.market_type,
+            signal.location,
+            signal.model_prob,
+            signal.market_prob,
+            signal.edge,
+            signal.kelly_fraction,
+            signal.confidence,
+            signal.direction,
+            signal.lead_time_hours,
+            ",".join(signal.sources),
+            signal.details,
+            signal.timestamp.isoformat(),
+        )
+        if self._use_pg:
+            pool = await self._get_pool()
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """INSERT INTO signals
+                       (market_id, question, market_type, location,
+                        model_prob, market_prob, edge, kelly_fraction,
+                        confidence, direction, lead_time_hours,
+                        sources, details, timestamp)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                       RETURNING id""",
+                    *params,
+                )
+                return row["id"]
+        else:
+            async with aiosqlite.connect(str(self._db_path)) as db:
+                cursor = await db.execute(
+                    """INSERT INTO signals
+                       (market_id, question, market_type, location,
+                        model_prob, market_prob, edge, kelly_fraction,
+                        confidence, direction, lead_time_hours,
+                        sources, details, timestamp)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    params,
+                )
+                await db.commit()
+                return cursor.lastrowid
 
     async def log_signals(self, signals: list[Signal]) -> list[int]:
         """Log multiple signals. Returns list of row IDs."""
@@ -101,15 +169,27 @@ class SignalTracker:
             Number of rows updated
         """
         await self._ensure_db()
-        async with aiosqlite.connect(str(self._db_path)) as db:
-            cursor = await db.execute(
-                """UPDATE signals
-                   SET outcome = ?, resolved_at = ?
-                   WHERE market_id = ? AND outcome IS NULL""",
-                (outcome, resolved_at, market_id),
-            )
-            await db.commit()
-            return cursor.rowcount
+        if self._use_pg:
+            pool = await self._get_pool()
+            async with pool.acquire() as conn:
+                result = await conn.execute(
+                    """UPDATE signals
+                       SET outcome = $1, resolved_at = $2
+                       WHERE market_id = $3 AND outcome IS NULL""",
+                    outcome, resolved_at, market_id,
+                )
+                # asyncpg returns e.g. "UPDATE 3"
+                return int(result.split()[-1])
+        else:
+            async with aiosqlite.connect(str(self._db_path)) as db:
+                cursor = await db.execute(
+                    """UPDATE signals
+                       SET outcome = ?, resolved_at = ?
+                       WHERE market_id = ? AND outcome IS NULL""",
+                    (outcome, resolved_at, market_id),
+                )
+                await db.commit()
+                return cursor.rowcount
 
     async def get_unresolved_market_ids(self) -> list[tuple[str, str]]:
         """Get distinct market IDs that have no outcome yet.
@@ -118,12 +198,20 @@ class SignalTracker:
             List of (market_id, question) tuples.
         """
         await self._ensure_db()
-        async with aiosqlite.connect(str(self._db_path)) as db:
-            cursor = await db.execute(
-                "SELECT DISTINCT market_id, question FROM signals WHERE outcome IS NULL"
-            )
-            rows = await cursor.fetchall()
-            return [(row[0], row[1]) for row in rows]
+        if self._use_pg:
+            pool = await self._get_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT DISTINCT market_id, question FROM signals WHERE outcome IS NULL"
+                )
+                return [(row["market_id"], row["question"]) for row in rows]
+        else:
+            async with aiosqlite.connect(str(self._db_path)) as db:
+                cursor = await db.execute(
+                    "SELECT DISTINCT market_id, question FROM signals WHERE outcome IS NULL"
+                )
+                rows = await cursor.fetchall()
+                return [(row[0], row[1]) for row in rows]
 
     async def get_calibration_data(self) -> list[tuple[float, int]]:
         """Get (model_prob, outcome) pairs for Platt scaling calibration.
@@ -131,17 +219,60 @@ class SignalTracker:
         Only returns signals where outcome has been backfilled.
         """
         await self._ensure_db()
-        async with aiosqlite.connect(str(self._db_path)) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
-                "SELECT model_prob, outcome FROM signals WHERE outcome IS NOT NULL"
-            )
-            rows = await cursor.fetchall()
-            return [(row["model_prob"], row["outcome"]) for row in rows]
+        if self._use_pg:
+            pool = await self._get_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT model_prob, outcome FROM signals WHERE outcome IS NOT NULL"
+                )
+                return [(row["model_prob"], row["outcome"]) for row in rows]
+        else:
+            async with aiosqlite.connect(str(self._db_path)) as db:
+                db.row_factory = aiosqlite.Row
+                cursor = await db.execute(
+                    "SELECT model_prob, outcome FROM signals WHERE outcome IS NOT NULL"
+                )
+                rows = await cursor.fetchall()
+                return [(row["model_prob"], row["outcome"]) for row in rows]
 
     async def get_performance_summary(self) -> dict:
         """Get a summary of signal performance."""
         await self._ensure_db()
+        if self._use_pg:
+            return await self._get_performance_summary_pg()
+        else:
+            return await self._get_performance_summary_sqlite()
+
+    async def _get_performance_summary_pg(self) -> dict:
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            total = await conn.fetchval("SELECT COUNT(*) FROM signals")
+            resolved = await conn.fetchval(
+                "SELECT COUNT(*) FROM signals WHERE outcome IS NOT NULL"
+            )
+            wins = await conn.fetchval(
+                """SELECT COUNT(*) FROM signals
+                   WHERE outcome IS NOT NULL
+                   AND ((direction = 'YES' AND outcome = 1)
+                        OR (direction = 'NO' AND outcome = 0))"""
+            )
+            avg_edge = await conn.fetchval(
+                "SELECT AVG(ABS(edge)) FROM signals"
+            )
+            brier = await conn.fetchval(
+                """SELECT AVG((model_prob - outcome) * (model_prob - outcome))
+                   FROM signals WHERE outcome IS NOT NULL"""
+            )
+            return {
+                "total_signals": total,
+                "resolved": resolved,
+                "wins": wins,
+                "win_rate": wins / resolved if resolved > 0 else None,
+                "avg_abs_edge": avg_edge,
+                "brier_score": brier,
+            }
+
+    async def _get_performance_summary_sqlite(self) -> dict:
         async with aiosqlite.connect(str(self._db_path)) as db:
             db.row_factory = aiosqlite.Row
 
@@ -153,7 +284,6 @@ class SignalTracker:
             )
             resolved = (await cursor.fetchone())["resolved"]
 
-            # Win rate: signals where direction matches outcome
             cursor = await db.execute(
                 """SELECT COUNT(*) as wins FROM signals
                    WHERE outcome IS NOT NULL
@@ -167,7 +297,6 @@ class SignalTracker:
             )
             avg_edge = (await cursor.fetchone())["avg_edge"]
 
-            # Brier score: AVG((model_prob - outcome)^2) over resolved signals
             cursor = await db.execute(
                 """SELECT AVG((model_prob - outcome) * (model_prob - outcome))
                    as brier FROM signals WHERE outcome IS NOT NULL"""
@@ -182,3 +311,27 @@ class SignalTracker:
                 "avg_abs_edge": avg_edge,
                 "brier_score": brier,
             }
+
+    async def get_signal_direction(self, market_id: str) -> str | None:
+        """Get the direction of the first signal logged for a market.
+
+        Returns:
+            "YES" or "NO", or None if no signal found.
+        """
+        await self._ensure_db()
+        if self._use_pg:
+            pool = await self._get_pool()
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT direction FROM signals WHERE market_id = $1 ORDER BY id LIMIT 1",
+                    market_id,
+                )
+                return row["direction"] if row else None
+        else:
+            async with aiosqlite.connect(str(self._db_path)) as db:
+                cursor = await db.execute(
+                    "SELECT direction FROM signals WHERE market_id = ? ORDER BY id LIMIT 1",
+                    (market_id,),
+                )
+                row = await cursor.fetchone()
+                return row[0] if row else None

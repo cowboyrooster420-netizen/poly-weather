@@ -29,7 +29,10 @@ class Settings(BaseSettings):
     # Minimum lead time (hours) — skip markets too close to expiry
     min_lead_time_hours: float = 6.0
 
-    # SQLite database path for signal tracking
+    # PostgreSQL connection URL (set DATABASE_URL on Railway)
+    database_url: str = ""
+
+    # SQLite database path for signal tracking (fallback when database_url is empty)
     db_path: Path = Path.home() / ".weather-edge" / "signals.db"
 
     # NOAA/NWS user agent string
