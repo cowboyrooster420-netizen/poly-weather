@@ -325,13 +325,19 @@ class SignalTracker:
         """
         await self._ensure_db()
 
+        # Deduplicate: keep only the latest signal per market_id (closest to resolution).
         base_query = """
-            SELECT market_id, question, market_type, location,
-                   model_prob, market_prob, edge, confidence,
-                   direction, lead_time_hours, timestamp,
-                   outcome, resolved_at
-            FROM signals
-            WHERE outcome IS NOT NULL
+            SELECT s.market_id, s.question, s.market_type, s.location,
+                   s.model_prob, s.market_prob, s.edge, s.confidence,
+                   s.direction, s.lead_time_hours, s.timestamp,
+                   s.outcome, s.resolved_at
+            FROM signals s
+            INNER JOIN (
+                SELECT market_id, MAX(id) AS max_id
+                FROM signals
+                WHERE outcome IS NOT NULL
+                GROUP BY market_id
+            ) latest ON s.id = latest.max_id
         """
 
         if self._use_pg:
@@ -339,12 +345,12 @@ class SignalTracker:
             async with pool.acquire() as conn:
                 if market_type:
                     rows = await conn.fetch(
-                        base_query + " AND market_type = $1 ORDER BY resolved_at DESC, id DESC",
+                        base_query + " WHERE s.market_type = $1 ORDER BY s.resolved_at DESC, s.id DESC",
                         market_type,
                     )
                 else:
                     rows = await conn.fetch(
-                        base_query + " ORDER BY resolved_at DESC, id DESC"
+                        base_query + " ORDER BY s.resolved_at DESC, s.id DESC"
                     )
                 return [dict(row) for row in rows]
         else:
@@ -352,12 +358,12 @@ class SignalTracker:
                 db.row_factory = aiosqlite.Row
                 if market_type:
                     cursor = await db.execute(
-                        base_query + " AND market_type = ? ORDER BY resolved_at DESC, id DESC",
+                        base_query + " WHERE s.market_type = ? ORDER BY s.resolved_at DESC, s.id DESC",
                         (market_type,),
                     )
                 else:
                     cursor = await db.execute(
-                        base_query + " ORDER BY resolved_at DESC, id DESC"
+                        base_query + " ORDER BY s.resolved_at DESC, s.id DESC"
                     )
                 rows = await cursor.fetchall()
                 return [
