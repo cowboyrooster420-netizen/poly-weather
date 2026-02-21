@@ -182,12 +182,24 @@ async def run_forecasts(
     console.print("[bold]Running forecast models...[/bold]")
     results: list[tuple[WeatherMarket, ProbabilityEstimate]] = []
 
+    settings = get_settings()
+    enabled_types = set(settings.enabled_market_types)
+
     skipped_no_params = 0
     skipped_no_model = 0
+    skipped_disabled_type = 0
 
     for market in markets:
         if not market.params:
             skipped_no_params += 1
+            continue
+
+        if market.params.market_type.value not in enabled_types:
+            skipped_disabled_type += 1
+            logger.info(
+                "Skipping disabled market type %s (market %s)",
+                market.params.market_type.value, market.market_id,
+            )
             continue
 
         model = get_model(market.params.market_type)
@@ -220,8 +232,11 @@ async def run_forecasts(
             logger.warning("Model error for market %s: %s", market.market_id, exc)
             console.print(f"  [red]Model error for {market.market_id}: {exc}[/red]")
 
-    if skipped_no_params or skipped_no_model:
-        logger.info("Forecast skips: %d no params, %d no model", skipped_no_params, skipped_no_model)
+    if skipped_no_params or skipped_no_model or skipped_disabled_type:
+        logger.info(
+            "Forecast skips: %d no params, %d no model, %d disabled type",
+            skipped_no_params, skipped_no_model, skipped_disabled_type,
+        )
 
     return results
 

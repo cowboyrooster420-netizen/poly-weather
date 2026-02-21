@@ -218,7 +218,9 @@ async def test_run_forecasts(mock_weather_markets, now):
         key2: (gfs2, ecmwf2, None, None),
     }
 
-    results = await run_forecasts(mock_weather_markets, weather_data)
+    with patch("weather_edge.pipeline.get_settings") as mock_settings:
+        mock_settings.return_value.enabled_market_types = ["temperature", "precipitation", "hurricane"]
+        results = await run_forecasts(mock_weather_markets, weather_data)
 
     assert len(results) == 2
     for market, estimate in results:

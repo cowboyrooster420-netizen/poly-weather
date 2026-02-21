@@ -65,6 +65,10 @@ class Settings(BaseSettings):
     # Max concurrent API requests
     max_concurrency: int = 10
 
+    # Market types to monitor (others are skipped during forecasting).
+    # Valid values: "temperature", "precipitation", "hurricane"
+    enabled_market_types: list[str] = ["temperature"]
+
     # Station bias correction
     station_bias_enabled: bool = True
     station_bias_path: Path = Path.home() / ".weather-edge" / "station_biases.json"
