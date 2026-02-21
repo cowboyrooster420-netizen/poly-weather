@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     min_confidence: float = 0.30
 
     # Minimum lead time (hours) — skip markets too close to expiry
-    min_lead_time_hours: float = 6.0
+    min_lead_time_hours: float = 12.0
 
     # PostgreSQL connection URL (set DATABASE_URL on Railway)
     database_url: str = ""
