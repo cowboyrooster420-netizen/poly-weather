@@ -280,6 +280,139 @@ def stats() -> None:
 
 
 @app.command()
+def scorecard(
+    market_type: Optional[str] = typer.Option(
+        None, "--type", "-t",
+        help="Filter by market type (e.g. temperature, precipitation)",
+    ),
+) -> None:
+    """Show detailed scorecard of all resolved markets with Brier scores."""
+
+    async def _run() -> None:
+        from collections import defaultdict
+
+        from weather_edge.signals.tracker import SignalTracker
+
+        tracker = SignalTracker()
+        rows = await tracker.get_resolved_signals(market_type=market_type)
+
+        if not rows:
+            if market_type:
+                console.print(f"[yellow]No resolved {market_type} signals found.[/yellow]")
+            else:
+                console.print("[yellow]No resolved signals found.[/yellow]")
+            return
+
+        # Per-signal detail table
+        table = Table(
+            title="Resolved Signals Scorecard",
+            show_lines=True,
+        )
+        table.add_column("Question", width=40, no_wrap=False)
+        table.add_column("Location", width=14)
+        table.add_column("Type", width=8)
+        table.add_column("Our Call", justify="center", width=8)
+        table.add_column("Model P", justify="right", width=8)
+        table.add_column("Market P", justify="right", width=8)
+        table.add_column("Edge", justify="right", width=8)
+        table.add_column("Outcome", justify="center", width=8)
+        table.add_column("Result", justify="center", width=6)
+
+        # Track per-type stats
+        type_stats: dict[str, list[tuple[float, int]]] = defaultdict(list)
+        total_wins = 0
+        total_resolved = 0
+
+        for row in rows:
+            outcome_str = "YES" if row["outcome"] == 1 else "NO"
+            direction = row["direction"] or "?"
+            correct = (
+                (direction == "YES" and row["outcome"] == 1)
+                or (direction == "NO" and row["outcome"] == 0)
+            )
+            mark = "[green]W[/green]" if correct else "[red]L[/red]"
+
+            mtype = row["market_type"] or "unknown"
+            type_stats[mtype].append((row["model_prob"], row["outcome"]))
+            total_resolved += 1
+            if correct:
+                total_wins += 1
+
+            edge_color = "green" if row["edge"] > 0 else "red"
+            table.add_row(
+                (row["question"] or "")[:60],
+                (row["location"] or "")[:14],
+                mtype,
+                f"[bold]{direction}[/bold]",
+                f"{row['model_prob']:.1%}",
+                f"{row['market_prob']:.1%}",
+                f"[{edge_color}]{row['edge']:+.1%}[/{edge_color}]",
+                outcome_str,
+                mark,
+            )
+
+        console.print(table)
+
+        # Brier score summary by type
+        def _brier(pairs: list[tuple[float, int]]) -> float:
+            return sum((p - o) ** 2 for p, o in pairs) / len(pairs)
+
+        def _win_rate(pairs: list[tuple[float, int]], rows_for_type: list[dict]) -> float:
+            # Need direction info, which isn't in the pairs. Recompute.
+            wins = 0
+            for p, o in pairs:
+                # Approximate: model_prob > 0.5 means we'd call YES
+                predicted_yes = p > 0.5
+                if (predicted_yes and o == 1) or (not predicted_yes and o == 0):
+                    wins += 1
+            return wins / len(pairs)
+
+        summary_table = Table(title="Brier Score by Market Type", show_lines=True)
+        summary_table.add_column("Market Type", width=16)
+        summary_table.add_column("Resolved", justify="right", width=10)
+        summary_table.add_column("Win Rate", justify="right", width=10)
+        summary_table.add_column("Brier Score", justify="right", width=12)
+
+        # Sort types alphabetically, compute stats
+        all_pairs: list[tuple[float, int]] = []
+        for mtype in sorted(type_stats.keys()):
+            pairs = type_stats[mtype]
+            all_pairs.extend(pairs)
+            brier = _brier(pairs)
+            wins = sum(
+                1 for row in rows
+                if (row["market_type"] or "unknown") == mtype
+                and (
+                    (row["direction"] == "YES" and row["outcome"] == 1)
+                    or (row["direction"] == "NO" and row["outcome"] == 0)
+                )
+            )
+            wr = wins / len(pairs)
+            summary_table.add_row(
+                mtype,
+                str(len(pairs)),
+                f"{wr:.1%}",
+                f"{brier:.3f}",
+            )
+
+        # Total row
+        if all_pairs:
+            total_brier = _brier(all_pairs)
+            total_wr = total_wins / total_resolved if total_resolved else 0
+            summary_table.add_row(
+                "[bold]ALL[/bold]",
+                f"[bold]{total_resolved}[/bold]",
+                f"[bold]{total_wr:.1%}[/bold]",
+                f"[bold]{total_brier:.3f}[/bold]",
+            )
+
+        console.print()
+        console.print(summary_table)
+
+    asyncio.run(_run())
+
+
+@app.command()
 def calibrate(
     station: Optional[str] = typer.Option(
         None, "--station", "-s",

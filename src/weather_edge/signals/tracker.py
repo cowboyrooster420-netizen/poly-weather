@@ -312,6 +312,73 @@ class SignalTracker:
                 "brier_score": brier,
             }
 
+    async def get_resolved_signals(
+        self, market_type: str | None = None,
+    ) -> list[dict]:
+        """Get all resolved signals with full detail.
+
+        Args:
+            market_type: Optional filter (e.g. "temperature"). None = all types.
+
+        Returns:
+            List of dicts with all signal fields plus outcome and resolved_at.
+        """
+        await self._ensure_db()
+
+        base_query = """
+            SELECT market_id, question, market_type, location,
+                   model_prob, market_prob, edge, confidence,
+                   direction, lead_time_hours, timestamp,
+                   outcome, resolved_at
+            FROM signals
+            WHERE outcome IS NOT NULL
+        """
+
+        if self._use_pg:
+            pool = await self._get_pool()
+            async with pool.acquire() as conn:
+                if market_type:
+                    rows = await conn.fetch(
+                        base_query + " AND market_type = $1 ORDER BY resolved_at DESC, id DESC",
+                        market_type,
+                    )
+                else:
+                    rows = await conn.fetch(
+                        base_query + " ORDER BY resolved_at DESC, id DESC"
+                    )
+                return [dict(row) for row in rows]
+        else:
+            async with aiosqlite.connect(str(self._db_path)) as db:
+                db.row_factory = aiosqlite.Row
+                if market_type:
+                    cursor = await db.execute(
+                        base_query + " AND market_type = ? ORDER BY resolved_at DESC, id DESC",
+                        (market_type,),
+                    )
+                else:
+                    cursor = await db.execute(
+                        base_query + " ORDER BY resolved_at DESC, id DESC"
+                    )
+                rows = await cursor.fetchall()
+                return [
+                    {
+                        "market_id": row["market_id"],
+                        "question": row["question"],
+                        "market_type": row["market_type"],
+                        "location": row["location"],
+                        "model_prob": row["model_prob"],
+                        "market_prob": row["market_prob"],
+                        "edge": row["edge"],
+                        "confidence": row["confidence"],
+                        "direction": row["direction"],
+                        "lead_time_hours": row["lead_time_hours"],
+                        "timestamp": row["timestamp"],
+                        "outcome": row["outcome"],
+                        "resolved_at": row["resolved_at"],
+                    }
+                    for row in rows
+                ]
+
     async def get_signal_direction(self, market_id: str) -> str | None:
         """Get the direction of the first signal logged for a market.
 
