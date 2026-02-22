@@ -267,3 +267,42 @@ async def test_brier_score_none_when_no_resolved(tracker):
 
     summary = await tracker.get_performance_summary()
     assert summary["brier_score"] is None
+
+
+# ---------- calibration table ----------
+
+
+@pytest.mark.asyncio
+async def test_save_and_load_calibration(tracker):
+    """Test saving and loading a calibration blob."""
+    await tracker.save_calibration("station_biases", '{"stations": {}}')
+    result = await tracker.load_calibration("station_biases")
+    assert result == '{"stations": {}}'
+
+
+@pytest.mark.asyncio
+async def test_load_calibration_missing(tracker):
+    """Test loading a calibration key that doesn't exist."""
+    result = await tracker.load_calibration("nonexistent_key")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_save_calibration_upsert(tracker):
+    """Test that save_calibration upserts (overwrites) on conflict."""
+    await tracker.save_calibration("station_biases", '{"version": 1}')
+    await tracker.save_calibration("station_biases", '{"version": 2}')
+    result = await tracker.load_calibration("station_biases")
+    assert result == '{"version": 2}'
+
+
+@pytest.mark.asyncio
+async def test_save_calibration_multiple_keys(tracker):
+    """Test storing multiple calibration keys."""
+    await tracker.save_calibration("station_biases", '{"biases": true}')
+    await tracker.save_calibration("other_config", '{"other": true}')
+
+    biases = await tracker.load_calibration("station_biases")
+    other = await tracker.load_calibration("other_config")
+    assert biases == '{"biases": true}'
+    assert other == '{"other": true}'

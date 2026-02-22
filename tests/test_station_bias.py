@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import numpy as np
 import pytest
@@ -15,6 +16,8 @@ from weather_edge.calibration.station_bias import (
     SkyCondition,
     StationBias,
     StationBiasV2,
+    _parse_biases_json,
+    _try_load_from_db,
     classify_sky_condition,
     compute_station_bias,
     compute_station_bias_stratified,
@@ -769,3 +772,226 @@ def test_condition_bias_min_aggregation(tmp_path):
         assert get_station_bias_for_condition("KTEST1", "min", 80.0) == pytest.approx(-0.5)
         # Clear, None (point-in-time) → mean_bias_c from clear bucket
         assert get_station_bias_for_condition("KTEST1", None, 10.0) == pytest.approx(2.75)
+
+
+# ---------- _parse_biases_json ----------
+
+
+def test_parse_biases_json_v2():
+    """_parse_biases_json handles v2 JSON with conditions."""
+    data = {
+        "version": 2,
+        "stations": {
+            "KTEST1": {
+                "city": "test",
+                "high_bias_c": 1.0,
+                "low_bias_c": 0.5,
+                "mean_bias_c": 0.75,
+                "n_days": 50,
+                "conditions": {
+                    "clear": {
+                        "high_bias_c": 3.0,
+                        "low_bias_c": 2.0,
+                        "mean_bias_c": 2.5,
+                        "n_days": 20,
+                    },
+                },
+            }
+        },
+    }
+    biases = _parse_biases_json(data)
+    assert "KTEST1" in biases
+    assert biases["KTEST1"].high_bias_c == pytest.approx(1.0)
+    assert len(biases["KTEST1"].condition_biases) == 1
+    assert biases["KTEST1"].condition_biases[0].condition == SkyCondition.CLEAR
+
+
+def test_parse_biases_json_empty():
+    """_parse_biases_json returns empty dict for empty stations."""
+    biases = _parse_biases_json({"stations": {}})
+    assert biases == {}
+
+
+# ---------- DB-aware load / save ----------
+
+
+def test_try_load_from_db_no_database_url():
+    """_try_load_from_db returns None when DATABASE_URL is empty."""
+    with patch("weather_edge.calibration.station_bias.get_settings") as mock_settings:
+        mock_settings.return_value.database_url = ""
+        result = _try_load_from_db()
+    assert result is None
+
+
+def test_try_load_from_db_returns_parsed(tmp_path):
+    """_try_load_from_db returns parsed biases when DB has data."""
+    json_str = json.dumps({
+        "version": 2,
+        "stations": {
+            "KTEST1": {
+                "city": "test",
+                "high_bias_c": 1.5,
+                "low_bias_c": 0.8,
+                "mean_bias_c": 1.15,
+                "n_days": 40,
+            }
+        },
+    })
+
+    mock_tracker = AsyncMock()
+    mock_tracker.load_calibration.return_value = json_str
+    mock_tracker.close = AsyncMock()
+
+    with patch("weather_edge.calibration.station_bias.get_settings") as mock_settings, \
+         patch("weather_edge.signals.tracker.SignalTracker", return_value=mock_tracker):
+        mock_settings.return_value.database_url = "postgresql://localhost/test"
+        result = _try_load_from_db()
+
+    assert result is not None
+    assert "KTEST1" in result
+    assert result["KTEST1"].high_bias_c == pytest.approx(1.5)
+
+
+def test_try_load_from_db_returns_none_on_empty():
+    """_try_load_from_db returns None when DB row is empty."""
+    mock_tracker = AsyncMock()
+    mock_tracker.load_calibration.return_value = None
+    mock_tracker.close = AsyncMock()
+
+    with patch("weather_edge.calibration.station_bias.get_settings") as mock_settings, \
+         patch("weather_edge.signals.tracker.SignalTracker", return_value=mock_tracker):
+        mock_settings.return_value.database_url = "postgresql://localhost/test"
+        result = _try_load_from_db()
+
+    assert result is None
+
+
+def test_try_load_from_db_handles_error():
+    """_try_load_from_db returns None on error."""
+    with patch("weather_edge.calibration.station_bias.get_settings") as mock_settings, \
+         patch("weather_edge.signals.tracker.SignalTracker", side_effect=Exception("connection error")):
+        mock_settings.return_value.database_url = "postgresql://localhost/test"
+        result = _try_load_from_db()
+
+    assert result is None
+
+
+def test_load_biases_prefers_db(tmp_path):
+    """load_biases() returns DB data when available, ignoring file."""
+    # Write a file with different data
+    bias_file = tmp_path / "biases.json"
+    bias_file.write_text(json.dumps({
+        "version": 1,
+        "stations": {
+            "KFILE": {"city": "file", "high_bias_c": 9.0, "low_bias_c": 9.0, "mean_bias_c": 9.0, "n_days": 1}
+        },
+    }))
+
+    db_json = json.dumps({
+        "version": 2,
+        "stations": {
+            "KDB": {"city": "db", "high_bias_c": 2.0, "low_bias_c": 1.0, "mean_bias_c": 1.5, "n_days": 50}
+        },
+    })
+
+    mock_tracker = AsyncMock()
+    mock_tracker.load_calibration.return_value = db_json
+    mock_tracker.close = AsyncMock()
+
+    with patch("weather_edge.calibration.station_bias.get_settings") as mock_settings, \
+         patch("weather_edge.signals.tracker.SignalTracker", return_value=mock_tracker):
+        mock_settings.return_value.station_bias_enabled = True
+        mock_settings.return_value.station_bias_path = bias_file
+        mock_settings.return_value.database_url = "postgresql://localhost/test"
+
+        biases = load_biases(force=True)
+
+    # Should get DB station, not file station
+    assert "KDB" in biases
+    assert "KFILE" not in biases
+
+
+def test_load_biases_falls_back_to_file(tmp_path):
+    """load_biases() falls back to file when DB returns None."""
+    bias_file = tmp_path / "biases.json"
+    bias_file.write_text(json.dumps({
+        "version": 1,
+        "stations": {
+            "KFILE": {"city": "file", "high_bias_c": 3.0, "low_bias_c": 1.0, "mean_bias_c": 2.0, "n_days": 40}
+        },
+    }))
+
+    mock_tracker = AsyncMock()
+    mock_tracker.load_calibration.return_value = None
+    mock_tracker.close = AsyncMock()
+
+    with patch("weather_edge.calibration.station_bias.get_settings") as mock_settings, \
+         patch("weather_edge.signals.tracker.SignalTracker", return_value=mock_tracker):
+        mock_settings.return_value.station_bias_enabled = True
+        mock_settings.return_value.station_bias_path = bias_file
+        mock_settings.return_value.database_url = "postgresql://localhost/test"
+
+        biases = load_biases(force=True)
+
+    assert "KFILE" in biases
+    assert biases["KFILE"].high_bias_c == pytest.approx(3.0)
+
+
+def test_save_biases_writes_to_db(tmp_path):
+    """save_biases() writes to both file and DB when DATABASE_URL is set."""
+    biases = {
+        "KTEST1": StationBiasV2(
+            station_id="KTEST1", city="testville",
+            high_bias_c=1.2, low_bias_c=0.8, mean_bias_c=1.0,
+            high_std_c=0.5, low_std_c=0.4, n_days=82,
+        )
+    }
+
+    bias_file = tmp_path / "biases.json"
+    mock_tracker = AsyncMock()
+    mock_tracker.save_calibration = AsyncMock()
+    mock_tracker.close = AsyncMock()
+
+    with patch("weather_edge.calibration.station_bias.get_settings") as mock_settings, \
+         patch("weather_edge.signals.tracker.SignalTracker", return_value=mock_tracker):
+        mock_settings.return_value.station_bias_enabled = True
+        mock_settings.return_value.station_bias_path = bias_file
+        mock_settings.return_value.database_url = "postgresql://localhost/test"
+
+        save_biases(biases, training_days=90)
+
+    # File should be written
+    assert bias_file.exists()
+    data = json.loads(bias_file.read_text())
+    assert data["stations"]["KTEST1"]["high_bias_c"] == 1.2
+
+    # DB should have been called
+    mock_tracker.save_calibration.assert_awaited_once()
+    call_args = mock_tracker.save_calibration.call_args
+    assert call_args[0][0] == "station_biases"
+    saved_data = json.loads(call_args[0][1])
+    assert saved_data["stations"]["KTEST1"]["high_bias_c"] == 1.2
+
+
+def test_save_biases_skips_db_when_no_url(tmp_path):
+    """save_biases() only writes to file when DATABASE_URL is empty."""
+    biases = {
+        "KTEST1": StationBiasV2(
+            station_id="KTEST1", city="testville",
+            high_bias_c=1.0, low_bias_c=0.5, mean_bias_c=0.75,
+            n_days=50,
+        )
+    }
+
+    bias_file = tmp_path / "biases.json"
+    with patch("weather_edge.calibration.station_bias.get_settings") as mock_settings, \
+         patch("weather_edge.signals.tracker.SignalTracker") as mock_tracker_cls:
+        mock_settings.return_value.station_bias_enabled = True
+        mock_settings.return_value.station_bias_path = bias_file
+        mock_settings.return_value.database_url = ""
+
+        save_biases(biases, training_days=90)
+        # SignalTracker should never be instantiated when database_url is empty
+        mock_tracker_cls.assert_not_called()
+
+    assert bias_file.exists()

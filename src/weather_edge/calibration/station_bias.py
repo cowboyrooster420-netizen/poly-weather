@@ -14,6 +14,7 @@ reflect what the specific station will actually report.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -110,33 +111,10 @@ _CONDITION_KEY_MAP = {
 }
 
 
-def _load_biases() -> dict[str, StationBiasV2]:
-    """Load biases from user file, falling back to bundled defaults.
-
-    Handles both v1 (no conditions) and v2 (with conditions) JSON.
-    v1 files are loaded with empty condition_biases.
-    """
-    settings = get_settings()
-    user_path = settings.station_bias_path
-
-    path: Path | None = None
-    if user_path.exists():
-        path = user_path
-    elif _BUNDLED_DEFAULTS.exists():
-        path = _BUNDLED_DEFAULTS
-    else:
-        logger.warning("No station bias file found; returning empty biases")
-        return {}
-
-    try:
-        data = json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError) as exc:
-        logger.warning("Failed to read station bias file %s: %s", path, exc)
-        return {}
-
+def _parse_biases_json(data: dict) -> dict[str, StationBiasV2]:
+    """Parse a biases JSON dict into StationBiasV2 objects."""
     biases: dict[str, StationBiasV2] = {}
     for station_id, info in data.get("stations", {}).items():
-        # Parse condition biases if present (v2)
         condition_biases: list[ConditionBias] = []
         conditions_data = info.get("conditions", {})
         for key, cond_info in conditions_data.items():
@@ -164,7 +142,85 @@ def _load_biases() -> dict[str, StationBiasV2]:
             n_days=info.get("n_days", 0),
             condition_biases=tuple(condition_biases),
         )
+    return biases
 
+
+def _run_async(coro):
+    """Run an async coroutine from sync context, handling existing event loops."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop is not None and loop.is_running():
+        # We're inside an async context — create a new thread to run the coroutine.
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result(timeout=15)
+    else:
+        return asyncio.run(coro)
+
+
+def _try_load_from_db() -> dict[str, StationBiasV2] | None:
+    """Try loading biases from the DB. Returns None if unavailable."""
+    settings = get_settings()
+    if not settings.database_url:
+        return None
+
+    try:
+        from weather_edge.signals.tracker import SignalTracker
+
+        async def _fetch():
+            tracker = SignalTracker()
+            try:
+                return await tracker.load_calibration("station_biases")
+            finally:
+                await tracker.close()
+
+        raw = _run_async(_fetch())
+        if raw is None:
+            return None
+
+        data = json.loads(raw)
+        biases = _parse_biases_json(data)
+        logger.info("Loaded biases for %d stations from database", len(biases))
+        return biases
+    except Exception as exc:
+        logger.warning("Failed to load biases from database: %s", exc)
+        return None
+
+
+def _load_biases() -> dict[str, StationBiasV2]:
+    """Load biases with fallback chain: DB → user file → bundled defaults → empty.
+
+    Handles both v1 (no conditions) and v2 (with conditions) JSON.
+    v1 files are loaded with empty condition_biases.
+    """
+    # 1. Try PostgreSQL calibration table
+    db_biases = _try_load_from_db()
+    if db_biases is not None:
+        return db_biases
+
+    # 2. Try local JSON file → bundled defaults
+    settings = get_settings()
+    user_path = settings.station_bias_path
+
+    path: Path | None = None
+    if user_path.exists():
+        path = user_path
+    elif _BUNDLED_DEFAULTS.exists():
+        path = _BUNDLED_DEFAULTS
+    else:
+        logger.warning("No station bias file found; returning empty biases")
+        return {}
+
+    try:
+        data = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Failed to read station bias file %s: %s", path, exc)
+        return {}
+
+    biases = _parse_biases_json(data)
     source = "user" if path == user_path else "bundled"
     logger.info("Loaded biases for %d stations from %s (%s)", len(biases), path, source)
     return biases
@@ -249,15 +305,8 @@ def get_station_bias_for_condition(
         return bias.mean_bias_c
 
 
-def save_biases(biases: dict[str, StationBiasV2], *, training_days: int = 90) -> Path:
-    """Persist biases to the user's station_bias_path.
-
-    Returns the path written to.
-    """
-    settings = get_settings()
-    path = settings.station_bias_path
-    path.parent.mkdir(parents=True, exist_ok=True)
-
+def _biases_to_json(biases: dict[str, StationBiasV2], training_days: int = 90) -> str:
+    """Serialize biases to a JSON string."""
     stations_data: dict[str, dict] = {}
     for sid, b in biases.items():
         station_entry: dict = {
@@ -289,9 +338,39 @@ def save_biases(biases: dict[str, StationBiasV2], *, training_days: int = 90) ->
         "training_days": training_days,
         "stations": stations_data,
     }
+    return json.dumps(data, indent=2)
 
-    path.write_text(json.dumps(data, indent=2) + "\n")
+
+def save_biases(biases: dict[str, StationBiasV2], *, training_days: int = 90) -> Path:
+    """Persist biases to the user's station_bias_path (and DB when available).
+
+    Returns the path written to.
+    """
+    settings = get_settings()
+    path = settings.station_bias_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    json_str = _biases_to_json(biases, training_days)
+
+    path.write_text(json_str + "\n")
     logger.info("Saved biases for %d stations to %s", len(biases), path)
+
+    # Also persist to database when DATABASE_URL is set.
+    if settings.database_url:
+        try:
+            from weather_edge.signals.tracker import SignalTracker
+
+            async def _save():
+                tracker = SignalTracker()
+                try:
+                    await tracker.save_calibration("station_biases", json_str)
+                finally:
+                    await tracker.close()
+
+            _run_async(_save())
+            logger.info("Saved biases to database")
+        except Exception as exc:
+            logger.warning("Failed to save biases to database: %s", exc)
 
     # Invalidate cache so next call picks up new values.
     global _cache

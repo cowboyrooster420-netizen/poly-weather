@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 
 import aiosqlite
 
@@ -57,6 +58,14 @@ _CREATE_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_signals_market_id ON signals(market_id);
 """
 
+_CREATE_CALIBRATION = """
+CREATE TABLE IF NOT EXISTS calibration (
+    key TEXT PRIMARY KEY,
+    data TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+"""
+
 
 class SignalTracker:
     """Signal tracker with PostgreSQL (via asyncpg) or SQLite (via aiosqlite) backend."""
@@ -93,11 +102,13 @@ class SignalTracker:
             async with pool.acquire() as conn:
                 await conn.execute(_PG_CREATE_TABLE)
                 await conn.execute(_CREATE_INDEX)
+                await conn.execute(_CREATE_CALIBRATION)
         else:
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
             async with aiosqlite.connect(str(self._db_path)) as db:
                 await db.execute(_SQLITE_CREATE_TABLE)
                 await db.execute(_CREATE_INDEX)
+                await db.execute(_CREATE_CALIBRATION)
                 await db.commit()
 
     async def log_signal(self, signal: Signal) -> int:
@@ -405,6 +416,49 @@ class SignalTracker:
                 cursor = await db.execute(
                     "SELECT direction FROM signals WHERE market_id = ? ORDER BY id LIMIT 1",
                     (market_id,),
+                )
+                row = await cursor.fetchone()
+                return row[0] if row else None
+
+    async def save_calibration(self, key: str, data: str) -> None:
+        """Upsert a calibration row (key → JSON blob)."""
+        now = datetime.now(timezone.utc).isoformat()
+        await self._ensure_db()
+        if self._use_pg:
+            pool = await self._get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """INSERT INTO calibration (key, data, updated_at)
+                       VALUES ($1, $2, $3)
+                       ON CONFLICT (key) DO UPDATE
+                       SET data = EXCLUDED.data, updated_at = EXCLUDED.updated_at""",
+                    key, data, now,
+                )
+        else:
+            async with aiosqlite.connect(str(self._db_path)) as db:
+                await db.execute(
+                    """INSERT INTO calibration (key, data, updated_at)
+                       VALUES (?, ?, ?)
+                       ON CONFLICT (key) DO UPDATE
+                       SET data = excluded.data, updated_at = excluded.updated_at""",
+                    (key, data, now),
+                )
+                await db.commit()
+
+    async def load_calibration(self, key: str) -> str | None:
+        """Read the JSON blob for a calibration key. Returns None if not found."""
+        await self._ensure_db()
+        if self._use_pg:
+            pool = await self._get_pool()
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT data FROM calibration WHERE key = $1", key,
+                )
+                return row["data"] if row else None
+        else:
+            async with aiosqlite.connect(str(self._db_path)) as db:
+                cursor = await db.execute(
+                    "SELECT data FROM calibration WHERE key = ?", (key,),
                 )
                 row = await cursor.fetchone()
                 return row[0] if row else None
